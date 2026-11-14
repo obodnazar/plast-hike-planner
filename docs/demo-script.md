@@ -17,7 +17,7 @@ uv run python scripts/record_weather.py        # свіжі прогнози д�
 ```bash
 uv run python scripts/reset_demo.py            # прибрати старі плани й рядки агента
 uv run check-obsidian                          # Obsidian відповідає, 20 інструментів
-uv run pytest -q                               # 29 тестів
+uv run pytest -q                               # 39 тестів
 ```
 - Obsidian відкритий на `demo-vault`, видно папки `Запити` і `Плани`.
 - Два вікна терміналу в папці `plast-hike-planner`, шрифт великий.

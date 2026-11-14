@@ -58,7 +58,7 @@ sections:
 # Rules that apply to every section.
 common:
   overnight_water_radius_km: {value: 0.3, severity: warning, approved: false, source: "PROPOSAL: research §4 field 7, every overnight needs water nearby or water carried in the plan"}
-  ridge_overnight: {value: 30, severity: warning, approved: false, source: "[S2] do not camp on ridge crests or isolated tops. Check: overnight within 30 m of the highest point in ±1 km"}
+  ridge_overnight: {value: 30, severity: warning, approved: false, source: "[S2] do not camp on ridge crests or isolated tops. Check (profile heights): within 30 m of the highest point in ±1 km and the ground drops at least 30 m on both sides"}
   arrive_hours_before_sunset: {value: 3, severity: warning, approved: false, source: "PROPOSAL: [S13] stop for the night 3–4 h before dusk"}
   earliest_start: {value: "06:00", severity: warning, approved: false, source: "PROPOSAL: [S14] youth teams move only 06:00–21:00"}
   default_start: {value: "08:00", severity: warning, approved: false, source: "planner assumption, not a norm"}

@@ -143,8 +143,8 @@ class RouteSummary(BaseModel):
 
 class FindRoutesResult(BaseModel):
     rules_status: str = Field(description="DRAFT or approved status of the rules used; tell it to the user")
-    daily_km_target: float = Field(description="Daily distance the ranking aims for, from the rules")
-    daily_km_limit: float | None = Field(description="Hard daily limit for the section, if any")
+    daily_km_target: float = Field(description="Daily distance the ranking aims for: the rules, or the group limit if stricter")
+    daily_km_limit: float | None = Field(description="Hard daily limit: the section rule, or the group limit if stricter")
     total_candidates: int = Field(description="Routes in the dataset before filtering")
     routes: list[RouteSummary] = Field(description="Matching routes, best first. Empty list = nothing matched (not an error)")
     excluded: dict[str, int] = Field(description="Why other routes were filtered out: reason -> count")
@@ -170,7 +170,7 @@ class OvernightCheck(BaseModel):
 
     waypoint: Waypoint = Field(description="The night spot")
     water_within_m: int | None = Field(description="Distance along the route to the nearest water point, null if none within 300 m")
-    ridge_risk: bool = Field(description="Overnight within 30 m of the highest point in ±1 km (ridge/top)")
+    ridge_risk: bool = Field(description="Night spot on a crest or top: near the highest point within ±1 km and the ground drops ≥30 m on both sides")
 
 
 class DayPlan(BaseModel):
@@ -268,8 +268,8 @@ class PackEstimate(BaseModel):
 
     personal_gear_kg: float | None = Field(description="Measured base gear without food and water; null if not given")
     food_kg: float = Field(description="Food for the whole hike, carried at the start")
-    water_kg: float = Field(description="Water carried at the start")
-    total_kg: float = Field(description="Food + water (+ personal gear if given)")
+    water_kg: float = Field(description="Water carried on the heaviest day: the flask, plus dry-night water if any night has no source")
+    total_kg: float = Field(description="Peak weight: all food + carried water (+ personal gear if given)")
     limit_kg: float | None = Field(description="Strictest applicable limit: kg rule and % of body weight")
     limit_source: str = Field(description="Which rule the limit comes from")
     remaining_for_gear_kg: float | None = Field(description="Limit minus food and water: what is left for all other gear")
@@ -291,6 +291,6 @@ class SuppliesResult(BaseModel):
     first_aid_kits: int = Field(description="Group first-aid kits")
     pack_participant: PackEstimate = Field(description="Start-of-hike pack of a participant")
     pack_adult: PackEstimate = Field(description="Start-of-hike pack of an adult leader")
-    gear_additions: list[str] = Field(description="Extra gear for this plan (cold nights, dry nights, long days)")
-    warnings: list[str] = Field(description="Problems to solve before the hike")
+    gear_additions: list[str] = Field(description="Extra gear for this plan (Ukrainian): cold nights, dry nights, long days")
+    warnings: list[str] = Field(description="Problems to solve before the hike (Ukrainian, for the leader)")
     assumptions: list[Assumption] = Field(description="Every coefficient used, with its source")

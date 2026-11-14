@@ -33,27 +33,37 @@ class Lenient(BaseModel):
 
 
 class ParsedRequest(Lenient):
-    """Facts from the leader's request note. Use null when the note does not say."""
+    """Facts from the leader's request note. Use null when the note does not say; the code then asks for them."""
 
-    section: Literal["novatstvo", "yunatstvo", "senior"] = Field(
-        description="novatstvo = новацтво (6-11), yunatstvo = юнацтво (11-18), senior = старші/сеніори (18+)")
-    participants: int = Field(ge=1, le=60, description="Number of participants of the section (not adults)")
-    adults: int = Field(ge=0, le=30, description="Number of adult leaders (виховники, провідники)")
-    days: int = Field(ge=1, le=7, description="Number of hiking days")
-    start_date: date = Field(description="First day, YYYY-MM-DD")
-    date_flexibility_days: int = Field(ge=0, le=3, description="How many days the start may move later; 0 if not said")
+    section: Literal["novatstvo", "yunatstvo", "senior"] | None = Field(
+        description="novatstvo = новацтво/УПН/новаки/рій/гніздо (6-11); yunatstvo = юнацтво/УПЮ/юнаки/юначки/"
+                    "гурток/курінь (11-18); senior = старші пластуни/УСП/УПС/сеніори (18+)")
+    participants: int | None = Field(default=None, ge=1, le=60,
+        description="Participants of the section, WITHOUT adults ('12 разом з 2 виховниками' -> 10)")
+    adults: int | None = Field(default=None, ge=0, le=30,
+        description="Adult leaders (виховники, провідники, батьки-супровід)")
+    days: int | None = Field(default=None, ge=1, le=7,
+        description="Hiking days. 'N ночівель' -> N+1; a range '2-3 дні' -> the larger; 'вихідні' -> 2")
+    start_date: date | None = Field(default=None,
+        description="First day YYYY-MM-DD. No year -> the nearest future date; weekdays -> use the calendar given")
+    date_flexibility_days: int = Field(default=0, ge=0, le=31,
+        description="How many days the start may move LATER ('можемо зсунути на 1-2 дні' -> 2); 0 if not said")
     region: Literal["chornohora", "svydovets", "gorgany", "marmarosy", "yaremche-vorokhta"] | None = Field(
-        description="Mountain area: Чорногора, Свидовець, Горгани, Мармароси, Яремче/Ворохта; null if not said")
-    must_include: list[Literal["lake", "peak", "water", "hut", "shelter", "campsite"]] = Field(
-        description="Wished features, e.g. lake for 'озеро'")
-    start_time: str | None = Field(description="Daily start time HH:MM, e.g. '08:00'; null if not said")
-    max_km_per_day: float | None = Field(description="Group's own km/day limit, null if not said")
-    max_ascent_per_day_m: int | None = Field(description="Group's own ascent limit per day, null if not said")
-    max_walking_hours_per_day: float | None = Field(description="Group's own walking-hours limit, null if not said")
-    max_overnight_elevation_m: int | None = Field(description="Highest allowed night spot in metres, null if not said")
-    lightest_body_weight_kg: float | None = Field(description="Weight of the lightest participant, null if not said")
-    participant_base_gear_kg: float | None = Field(description="Weighed participant rucksack without food/water")
-    adult_base_gear_kg: float | None = Field(description="Weighed adult rucksack without food/water")
+        default=None, description="Чорногора (also Говерла, Петрос, Піп Іван, Несамовите) -> chornohora; Свидовець "
+        "(Близниця, Драгобрат) -> svydovets; Горгани (Сивуля, Висока, Ґорґан) -> gorgany; Мармароси -> marmarosy; "
+        "Яремче, Ворохта, Маковиця -> yaremche-vorokhta; null if not said")
+    must_include: list[Literal["lake", "peak", "water", "hut", "shelter", "campsite"]] | None = Field(
+        default=None, description="Wished features: озеро -> lake, вершина -> peak, джерело -> water, "
+        "хатина/колиба -> hut, притулок -> shelter, табірне місце -> campsite")
+    start_time: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$",
+        description="Daily start time H:MM or HH:MM ('не пізніше 8:00' -> '8:00'); null if not said")
+    max_km_per_day: float | None = Field(default=None, description="Group's own km/day limit, null if not said")
+    max_ascent_per_day_m: int | None = Field(default=None, description="Group's own ascent limit per day, m")
+    max_walking_hours_per_day: float | None = Field(default=None, description="Group's own walking-hours limit")
+    max_overnight_elevation_m: int | None = Field(default=None, description="Highest allowed night spot, m")
+    lightest_body_weight_kg: float | None = Field(default=None, description="Weight of the lightest participant, kg")
+    participant_base_gear_kg: float | None = Field(default=None, description="Weighed participant rucksack without food/water, kg")
+    adult_base_gear_kg: float | None = Field(default=None, description="Weighed adult rucksack without food/water, kg")
 
 
 class Proposal(Lenient):

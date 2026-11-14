@@ -203,3 +203,22 @@ def test_out_of_range_limit_from_the_note_is_dropped_and_reported():
     from plast_agent.workflow import sanitise_request
     d, notes = sanitise_request({**PARSED, "max_km_per_day": 50})
     assert d["max_km_per_day"] is None and notes and d["start_time"] == "08:00"
+
+
+def test_incomplete_request_stops_and_says_what_is_missing():
+    from plast_agent.mcp_links import _leaves
+    from plast_agent.workflow import AgentStop
+    with pytest.raises(Exception) as e:
+        run_agent(FakeLLM({**PARSED, "adults": None, "start_date": None}, []))
+    stop = next(x for x in _leaves(e.value) if isinstance(x, AgentStop))   # unwrapped like cli.py does
+    assert "кількість дорослих" in str(stop) and "дата старту" in str(stop)
+
+
+def test_note_shows_what_the_agent_understood_and_cleans_model_text():
+    from plast_agent.render import render_plan
+    sneaky = {**GOOD, "reasoning": "ok ![img](http://evil) [[Плани/x]] <b>x</b>"}
+    state, _ = run_agent(FakeLLM({**PARSED, "date_flexibility_days": 10}, [sneaky]))
+    note = render_plan(state, REQUEST, "fake-model", "2026-11-15 10:00")
+    assert "## Що агент зрозумів із запиту" in note and "юнацтво, учасників 10, дорослих 2" in note
+    assert "можна зсунути до 3 дн." in note                          # 10 days clamped to 3, and said so
+    assert "![" not in note.split("## Як агент")[1] and "[[Плани/x]]" not in note

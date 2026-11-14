@@ -97,6 +97,7 @@ Feedback actually changes behaviour. In the recorded demo run (14 Nov 2026), att
 - Routes are planned one way. Linear routes may end on a summit; the descent or transfer back is not planned.
 - Start and finish labels come from the nearest settlement or point of interest, and some are approximate. Region assignment is by the nearest centre.
 - Night spots are OSM points within 300 m of the trail. Campsite tags in OSM are uneven.
+- Each point of interest gets one km position, so loops and out-and-back routes see it only once.
 
 **Calculations**
 - SRTM 30 m heights with a 10 m hysteresis give approximate ascent.
@@ -104,7 +105,8 @@ Feedback actually changes behaviour. In the recorded demo run (14 Nov 2026), att
 - Sunset uses the NOAA approximation (a few minutes off).
 
 **Weather**
-- Daily values at a single point. The 12-hour official thresholds are applied to daily sums.
+- Daily values at a single point. The 12-hour official thresholds are applied to daily sums. Gusts are reported but not scored.
+- An incomplete forecast for a planned day is reported as `WEATHER_UNAVAILABLE`, never filled with zeros.
 - No avalanche, visibility or lightning-timing logic.
 - A forecast is not certainty.
 
@@ -113,7 +115,10 @@ Feedback actually changes behaviour. In the recorded demo run (14 Nov 2026), att
 - No check of protected areas, wartime restrictions or ДСНС registration; these appear as a documents checklist only.
 
 **Supplies**
-- Generic coefficients; group gear weight is not included in the pack estimate; no menu.
+- Generic coefficients; group gear weight is not included in the pack estimate; no menu. The pack is the peak weight (all food + flask + dry-night water if any night is dry).
+
+**Language**
+- Tool messages are English (for models); the plan note is Ukrainian, built from the stable codes. The tools' fix suggestions stay English in the note, labelled as the tool's advice.
 
 **Model**
 - The free model is non-deterministic and slow. A run may use up to 4 attempts and ends with an explicit `risky`/`failed` status if no plan passes. The model does not call MCP tools itself (see §6).

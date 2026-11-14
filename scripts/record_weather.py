@@ -40,6 +40,8 @@ def main() -> None:
             print(f"[{i}/{len(routes)}] {r['id']} {body['daily']['time'][0]}..{body['daily']['time'][-1]}")
         except DomainError as exc:
             print(f"[{i}/{len(routes)}] {r['id']} FAILED: {exc.message}")
+        except Exception as exc:  # one bad answer must not stop the whole recording
+            print(f"[{i}/{len(routes)}] {r['id']} FAILED: {type(exc).__name__}: {exc}")
     print(f"recorded {ok}/{len(routes)} into {weather.FIXTURES}")
 
 

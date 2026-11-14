@@ -5,6 +5,7 @@ Every number in the note is copied from a tool result; nothing here computes dom
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 STATUS = {
@@ -13,6 +14,68 @@ STATUS = {
     "risky": "⚠️ План складено, але НЕ рекомендовано без змін (погода)",
     "failed": "❌ Валідного плану скласти не вдалося",
 }
+SECTION_UA = {"novatstvo": "новацтво", "yunatstvo": "юнацтво", "senior": "старші / сеніори"}
+FEATURE_UA = {"lake": "озеро", "peak": "вершина", "water": "джерело", "hut": "хатина", "shelter": "притулок",
+              "campsite": "табірне місце"}
+
+# Tool messages are English (for the model); the note for the leader is Ukrainian, built from the stable codes.
+VIOLATION_UA = {
+    "KM_PER_DAY_MAX": "День {day}: {actual} км, ліміт {limit} км.",
+    "KM_PER_DAY_WARN": "День {day}: {actual} км, більше за комфортні {limit} км.",
+    "ASCENT_PER_DAY_MAX": "День {day}: набір висоти {actual} м, ліміт {limit} м.",
+    "WALKING_HOURS_MAX": "День {day}: {actual} год ходу, ліміт {limit} год.",
+    "ARRIVAL_AFTER_SAFE_TIME": "День {day}: прихід о {actual}, а безпечно — до {limit} (за 3 год до заходу сонця).",
+    "OVERNIGHT_KIND_NOT_ALLOWED": "Ночівля після дня {day}: тип «{actual}» для цієї групи не дозволено (можна: {limit}).",
+    "OVERNIGHT_TOO_HIGH": "Ночівля після дня {day} на {actual} м, а ліміт групи {limit} м.",
+    "RIDGE_OVERNIGHT": "Ночівля після дня {day} ({actual} м) схожа на гребінь або вершину.",
+    "OVERNIGHT_NO_WATER": "Біля ночівлі після дня {day} немає води в межах 300 м.",
+    "TOO_MANY_DAYS": "{actual} дн. мандрівки, ліміт для групи {limit} дн.",
+    "TOO_FEW_ADULTS": "Дорослих {actual}, а потрібно щонайменше {limit}.",
+    "ADULT_RATIO": "Замало дорослих на таку кількість учасників: є {actual}, потрібно {limit}.",
+    "GROUP_TOO_LARGE": "Група {actual} осіб, рекомендовано не більше {limit}.",
+    "START_TOO_EARLY": "Старт о {actual}, раніше дозволеного {limit}.",
+}
+
+
+def num(v):
+    return f"{v:g}" if isinstance(v, (int, float)) else v
+
+
+def violation_ua(x: dict[str, Any]) -> str:
+    template = VIOLATION_UA.get(x["code"])
+    if not template:
+        return x["message"]
+    return template.format(day=x["day"], actual=num(x["actual"]), limit=num(x["limit"]))
+
+
+def clean(text: str | None, limit: int = 600) -> str:
+    """Model text going into the vault: no links, embeds, HTML or table breaks, bounded length."""
+    text = re.sub(r"[\[\]!<>`|]", "", text or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def request_lines(r: dict[str, Any], notes: list[str]) -> list[str]:
+    """What the model understood from the leader's note, so the leader can catch a misreading."""
+    limits = {"max_km_per_day": "км/день", "max_ascent_per_day_m": "м набору/день",
+              "max_walking_hours_per_day": "год ходу/день", "max_overnight_elevation_m": "м — найвища ночівля"}
+    lim = ", ".join(f"{num(r[k])} {u}" for k, u in limits.items() if r.get(k)) or "немає"
+    out = [
+        f"- Група: {SECTION_UA.get(r.get('section'), r.get('section'))}, учасників {r.get('participants')}, "
+        f"дорослих {r.get('adults')}",
+        f"- Дні: {r.get('days')}, старт {r.get('start_date')} о {r.get('start_time')}"
+        + (f", можна зсунути до {r['date_flexibility_days']} дн. пізніше" if r.get("date_flexibility_days") else ""),
+        f"- Район: {r.get('region') or 'будь-який'}; побажання: "
+        + (", ".join(FEATURE_UA.get(f, f) for f in r.get("must_include") or []) or "немає"),
+        f"- Обмеження групи: {lim}",
+    ]
+    if r.get("lightest_body_weight_kg") or r.get("participant_base_gear_kg"):
+        out.append(f"- Вага: найлегший учасник {num(r.get('lightest_body_weight_kg'))} кг; спорядження учасника "
+                   f"{num(r.get('participant_base_gear_kg'))} кг, дорослого {num(r.get('adult_base_gear_kg'))} кг")
+    out += [f"- ⚠️ {n}" for n in notes]
+    return out
+
+
 KIND_UA = {"hut": "хатина", "campsite": "стоянка", "shelter": "притулок", "water": "джерело",
            "lake": "озеро", "peak": "вершина", "start": "старт", "finish": "фініш"}
 
@@ -41,7 +104,11 @@ def render_plan(state: dict[str, Any], request_path: str, model: str, generated_
     add(f"**{STATUS.get(status, status)}** · запит: [[{request_path.removesuffix('.md')}]]")
     if v.get("rules_status"):
         add(f"\n> [!warning] Норми: {v['rules_status']}. Перевірте й затвердьте `data/rules.yaml`.")
-    add(f"\n## Висновок\n{state.get('conclusion', '')}\n")
+    add(f"\n## Висновок\n{clean(state.get('conclusion'), 1500)}\n")
+    if r:
+        add("## Що агент зрозумів із запиту")
+        L.extend(request_lines(r, state.get("search_notes", [])))
+        add("")
 
     if v.get("days"):
         rid = v["route_id"]
@@ -63,11 +130,11 @@ def render_plan(state: dict[str, Any], request_path: str, model: str, generated_
         if errors:
             add("\n**Порушення (план не валідний):**")
             for x in errors:
-                add(f"- ✗ {x['message']} {x['suggestion']}")
+                add(f"- ✗ {violation_ua(x)} _Порада інструмента: {clean(x['suggestion'], 300)}_")
         if warns:
             add("\n**Попередження:**")
             for x in warns:
-                add(f"- {x['message']} {x['suggestion']}")
+                add(f"- {violation_ua(x)} _Порада інструмента: {clean(x['suggestion'], 300)}_")
 
     if w.get("days"):
         add(f"\n## Погода (загальний ризик: **{w['overall_risk']}**)")
@@ -115,9 +182,9 @@ def render_plan(state: dict[str, Any], request_path: str, model: str, generated_
     for a in state.get("attempts", []):
         p = a["proposal"]
         add(f"{a['n']}. `{p['route_id']}`, ночівлі {', '.join(p['overnight_waypoint_ids']) or '—'}, "
-            f"старт {p['start_date']} → **{a['outcome']}**. _{p.get('reasoning', '')}_")
+            f"старт {p['start_date']} → **{a['outcome']}**. _{clean(p.get('reasoning'), 400)}_")
         for f in a["feedback"][:4]:
-            add(f"    - {f}")
+            add(f"    - {clean(f, 400)}")
     for n in state.get("search_notes", []):
         add(f"- Пошук: {n}")
 

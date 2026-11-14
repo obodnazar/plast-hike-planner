@@ -60,9 +60,12 @@ def overnight_options(route: dict[str, Any], section: str, limit: int = 12) -> l
 
 
 def find_routes(section: str, days: int, region: str | None, must_include: list[str],
-                max_results: int) -> FindRoutesResult:
+                max_results: int, group_max_km_per_day: float | None = None) -> FindRoutesResult:
     routes = load_routes()
     target, hard = daily_targets(section)
+    if group_max_km_per_day:  # the group's own limit only makes things stricter
+        hard = min(hard, group_max_km_per_day) if hard else group_max_km_per_day
+        target = min(target, group_max_km_per_day)
     excluded: dict[str, int] = {}
     notes: list[str] = []
 

@@ -139,9 +139,22 @@ def day_stats(route: dict[str, Any], a: dict[str, Any], b: dict[str, Any]) -> di
     }
 
 
-def ridge_risk(route: dict[str, Any], km: float, elevation: int) -> bool:
+def ridge_risk(route: dict[str, Any], km: float, elevation: int | None = None) -> bool:
+    """A night spot on a crest or top: near the highest point within ±1 km AND the ground drops on both sides.
+
+    Heights come from the route profile (not the OSM `ele` tag) so all points are compared on one scale.
+    A spot in the middle of a long climb, or on a plateau, is not a ridge.
+    """
+    margin = common_rule("ridge_overnight")["value"]  # metres
     window = profile_between(route, km - 1.0, km + 1.0)
-    return bool(window) and elevation >= max(p[3] for p in window) - common_rule("ridge_overnight")["value"]
+    if not window:
+        return False
+    here = min(window, key=lambda p: abs(p[0] - km))[3]
+    left = [p[3] for p in window if p[0] < km]
+    right = [p[3] for p in window if p[0] > km]
+    near_top = here >= max(p[3] for p in window) - margin
+    drops_both_sides = bool(left and right) and min(left) <= here - margin and min(right) <= here - margin
+    return near_top and drops_both_sides
 
 
 # ------------------------------------------------------------------ main entry

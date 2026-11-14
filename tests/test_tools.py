@@ -6,7 +6,7 @@ Run:  uv run pytest -q
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -102,7 +102,7 @@ def test_error_payload_is_json_with_code():
 # ------------------------------------------------------------------ assess_weather_risk
 def synthetic_body(start: str, n: int, **overrides):
     """An Open-Meteo-shaped daily block; same parser as live and replay."""
-    days = [date.fromisoformat(start).replace(day=date.fromisoformat(start).day + i).isoformat() for i in range(n)]
+    days = [(date.fromisoformat(start) + timedelta(days=i)).isoformat() for i in range(n)]
     base = {"weather_code": 1, "temperature_2m_max": 15.0, "temperature_2m_min": 5.0, "precipitation_sum": 0.0,
             "precipitation_probability_max": 10, "wind_speed_10m_max": 5.0, "wind_gusts_10m_max": 9.0}
     base.update(overrides)
@@ -139,20 +139,16 @@ def test_night_temperature_uses_lapse_rate(replay_with):
     assert first_night > 5
 
 
-def test_replay_of_recorded_fixture_matches_structure():
-    weather_mode = weather.mode
+def test_replay_of_recorded_fixture_matches_structure(monkeypatch):
     files = sorted(weather.FIXTURES.glob(f"{ROUTE}_*.json"))
     if not files:
         pytest.skip("no recorded fixture")
     rec = json.loads(files[-1].read_text(encoding="utf-8"))
     first = rec["response"]["daily"]["time"][1]
-    import os
-    os.environ["WEATHER_MODE"] = "replay"
-    try:
-        r = weather.assess_weather_risk(ROUTE, date.fromisoformat(first), ["w30", "w56"])
-    finally:
-        os.environ.pop("WEATHER_MODE", None)
-    assert r.mode == "replay" and len(r.days) == 3 and weather_mode
+    monkeypatch.setenv("WEATHER_MODE", "replay")
+    r = weather.assess_weather_risk(ROUTE, date.fromisoformat(first), ["w30", "w56"])
+    assert r.mode == "replay" and len(r.days) == 3
+    assert r.coldest_night_c == min(d.night_spot_min_c for d in r.days if d.night_spot_min_c is not None)
 
 
 # ------------------------------------------------------------------ calculate_supplies
@@ -189,3 +185,75 @@ def test_pack_check_uses_measured_gear_only():
     assert no_gear.pack_participant.remaining_for_gear_kg == pytest.approx(9 - (2.7 + 1.0))
     heavy = calculate_supplies("yunatstvo", 10, 2, _days(), 0, None, 3, None, 6.0, None)
     assert heavy.pack_participant.within_limit is False            # 2.7 + 1.0 + 6.0 > 9
+
+
+# ------------------------------------------------------------------ P3 coverage
+from plast_trail.data import load_routes  # noqa: E402
+from plast_trail.validation import ridge_risk  # noqa: E402
+
+
+def test_ridge_warning_needs_a_real_top():
+    r = load_routes()[ROUTE]
+    w23 = next(w for w in r["waypoints"] if w["id"] == "w23")      # campsite in a valley on a long climb
+    assert not ridge_risk(r, w23["km"])
+    flagged = sum(ridge_risk(x, w["km"]) for x in load_routes().values() for w in x["waypoints"]
+                  if w["kind"] in ("hut", "campsite", "shelter", "water", "lake"))
+    total = sum(1 for x in load_routes().values() for w in x["waypoints"]
+                if w["kind"] in ("hut", "campsite", "shelter", "water", "lake"))
+    assert flagged / total < 0.15                                  # was ~30 % before the fix
+
+
+def test_novatstvo_rules_apply():
+    r = find_routes("novatstvo", 2, None, [], 10)
+    assert r.daily_km_limit == 10
+    route = next(x for x in r.routes if x.overnight_options)
+    v = validate_hike_plan(route.id, "novatstvo", 8, 2, [route.overnight_options[0].id], None, None, None)
+    assert {"ADULT_RATIO", "TOO_FEW_ADULTS"}.isdisjoint({x.code for x in v.violations})   # 8 children, 2 adults ok
+    v = validate_hike_plan(route.id, "novatstvo", 11, 2, [route.overnight_options[0].id], None, None, None)
+    assert "ADULT_RATIO" in {x.code for x in v.violations}                                # 11 > 2 × 5
+
+
+def test_senior_has_no_adult_ratio_and_one_day_hike_works():
+    v = validate_hike_plan(ROUTE, "senior", 6, 0, [], None, None, None)
+    assert len(v.days) == 1 and v.days[0].km == pytest.approx(33.3, abs=0.2)
+    codes = {x.code for x in v.violations}
+    assert "ADULT_RATIO" not in codes and "TOO_FEW_ADULTS" not in codes
+
+
+def test_sunset_follows_the_dst_change():
+    # Kyiv leaves summer time on 25 Oct 2026: the sunset clock time jumps back by about an hour.
+    before = sunset_local_minutes(date(2026, 10, 24), 50.45, 30.52)
+    after = sunset_local_minutes(date(2026, 10, 26), 50.45, 30.52)
+    assert 50 <= before - after <= 70
+
+
+def test_missing_forecast_value_is_an_error_not_a_zero(replay_with):
+    body = synthetic_body("2026-07-10", 4)
+    body["daily"]["precipitation_sum"][1] = None
+    replay_with(body)
+    with pytest.raises(DomainError) as e:
+        weather.assess_weather_risk(ROUTE, date(2026, 7, 10), ["w30", "w56"])
+    assert e.value.code == "WEATHER_UNAVAILABLE" and "precipitation_sum" in e.value.message
+
+
+def test_malformed_forecast_body_is_an_error(replay_with):
+    replay_with({"hourly": {}})
+    with pytest.raises(DomainError) as e:
+        weather.assess_weather_risk(ROUTE, date(2026, 7, 10), ["w30", "w56"])
+    assert e.value.code == "WEATHER_UNAVAILABLE"
+
+
+def test_pack_uses_body_weight_and_dry_night_water():
+    s = calculate_supplies("yunatstvo", 10, 2, _days(), 0, None, 3, 40, 5.0, None)
+    assert s.pack_participant.limit_kg == 8.0                       # min(9 kg, 20 % of 40 kg)
+    assert s.pack_participant.within_limit is False                 # 2.7 food + 1 water + 5 gear
+    dry = calculate_supplies("yunatstvo", 10, 2, _days(), 1, None, 3, None, None, None)
+    assert dry.pack_participant.water_kg == pytest.approx(1.0 + 1.5)
+
+
+def test_group_km_limit_narrows_the_search():
+    loose = find_routes("yunatstvo", 2, "chornohora", [], 10)
+    tight = find_routes("yunatstvo", 2, "chornohora", [], 10, group_max_km_per_day=8)
+    assert tight.daily_km_limit == 8
+    assert all(x.length_km <= 16 for x in tight.routes)                       # 2 days × 8 km
+    assert tight.excluded.get("too long for the days", 0) > loose.excluded.get("too long for the days", 0)

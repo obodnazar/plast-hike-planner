@@ -16,7 +16,7 @@
 1. Overpass: all `route=hiking` relations in the bbox 47.95–48.75 N, 23.9–24.9 E (`out geom`), points of interest, settlements. Raw responses are cached in `data/raw/` (git-ignored).
 2. Each relation's ways are chained into one line (ways come unordered and reversed). Routes are kept only if the longest chain covers ≥ 85 % of the member length and the length is 3–90 km.
 3. The line is resampled every 250 m. Heights come from OpenTopoData: 100 points per request, 1 request per second, cached after every batch.
-4. Ascent and descent are summed with 10 m hysteresis. Points of interest within 300 m (lakes 500 m) become waypoints `w0..wN` at their km position.
+4. Ascent and descent are summed with 10 m hysteresis. Points of interest within 300 m (lakes 500 m) become waypoints `w0..wN` at their km position. A "lake" is `natural=water` with `water=lake` or no subtype; ponds (`water=pond`, names with «став…»), fish/zoo enclosures, rivers and reservoirs are excluded.
 5. Orientation: "A – B" starts at A when the route name matches the end labels; otherwise the route starts from the lower end. Each route gets a region by the nearest region centre.
 
 Snapshot in the committed file: OSM `2026-11-14T19:08:36Z`, 121 routes (skipped: 25 out of length range, 10 unnamed, 4 broken chains), 3039 points of interest.
@@ -32,8 +32,8 @@ Snapshot in the committed file: OSM `2026-11-14T19:08:36Z`, 121 routes (skipped:
 | recording (`scripts/record_weather.py`, not the server) | Open-Meteo | `fixtures/open-meteo/<route>_<first-day>.json` | refreshing fixtures; the server refuses `WEATHER_MODE=record`, so the tool itself never writes |
 
 - **What a fixture is.** One genuine Open-Meteo response per route, saved untouched together with the exact request: `{"recorded_at", "request": {"url", "params"}, "response": <body>}`. The request asks for 16 days of daily values at the route's highest point.
-- **Fidelity.** Replay loads `response` and passes it through the **same** `parse_forecast()` and the same risk scoring as a live call. There is no shortcut that returns a prepared answer. If no recorded file covers the requested dates, the tool returns `WEATHER_FIXTURE_MISSING` with the recorded ranges.
-- **Coverage now.** 121 fixtures recorded on 2026-11-14 cover 14–29 Nov 2026.
+- **Fidelity.** Replay loads `response` and passes it through the **same** `parse_forecast()` (with the same completeness checks) and the same risk scoring as a live call. There is no shortcut that returns a prepared answer. If no recorded file covers the requested dates, the tool returns `WEATHER_FIXTURE_MISSING` with the recorded ranges.
+- **Coverage now.** 121 fixtures recorded on 2026-11-14 cover 14–29 Nov 2026. Replay deliberately does not compare dates with today: a recorded window can be replayed later (for the demo); live mode only accepts today..today+15.
 - **Refresh before the demo** (about 3 minutes, ~121 calls):
   ```bash
   uv run python scripts/record_weather.py                       # all routes

@@ -84,7 +84,8 @@ def request_params(point: dict[str, float]) -> dict[str, Any]:
 def fetch_live(route_id: str, point: dict[str, float]) -> tuple[dict[str, Any], str]:
     """Call Open-Meteo (with throttle, cache and two retries). Returns (body, fetched_at)."""
     global _last_call
-    cached = _cache.get(route_id)
+    key = f"{route_id}:{datetime.now(KYIV).date()}"  # a forecast fetched yesterday must not answer for today
+    cached = _cache.get(key)
     if cached and time.time() - cached[0] < CACHE_SECONDS:
         return cached[1], datetime.fromtimestamp(cached[0], timezone.utc).isoformat(timespec="seconds")
     params = request_params(point)
@@ -101,15 +102,17 @@ def fetch_live(route_id: str, point: dict[str, float]) -> tuple[dict[str, Any], 
         else:
             if r.status_code == 200:
                 body = r.json()
+                check_body(body)  # a malformed answer is an error, and is never cached
                 fetched = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                _cache[route_id] = (time.time(), body)
+                _cache[key] = (time.time(), body)
                 if mode() == "record":
                     save_fixture(route_id, params, body, fetched)
                 return body, fetched
             last_error = f"HTTP {r.status_code}: {r.text[:200]}"
             if r.status_code not in (429, 500, 502, 503, 504):
                 break
-        time.sleep(2 ** attempt)
+        if attempt < 2:  # no pointless wait after the last try
+            time.sleep(2 ** attempt)
     raise DomainError(WEATHER_UNAVAILABLE, f"Open-Meteo did not answer: {last_error}",
                       "Do not retry now: report the weather as unknown to the user. "
                       "(Operator: WEATHER_MODE=replay serves recorded forecasts.)")
@@ -145,10 +148,36 @@ def load_fixture(route_id: str, needed: list[str]) -> tuple[dict[str, Any], str]
 
 
 # ------------------------------------------------------------------ scoring
+REQUIRED_VARS = ["weather_code", "temperature_2m_max", "temperature_2m_min", "precipitation_sum", "wind_speed_10m_max"]
+
+
+def check_body(body: Any) -> None:
+    """The response must have every daily array, all of the same length as `time`."""
+    daily = body.get("daily") if isinstance(body, dict) else None
+    if not isinstance(daily, dict) or not isinstance(daily.get("time"), list):
+        raise DomainError(WEATHER_UNAVAILABLE, "Open-Meteo answer has no daily forecast.",
+                          "Do not retry now: report the weather as unknown to the user.")
+    bad = [v for v in DAILY_VARS if not isinstance(daily.get(v), list) or len(daily[v]) != len(daily["time"])]
+    if bad:
+        raise DomainError(WEATHER_UNAVAILABLE, f"Open-Meteo answer is missing daily values: {', '.join(bad)}.",
+                          "Do not retry now: report the weather as unknown to the user.")
+
+
 def parse_forecast(body: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Open-Meteo daily arrays -> {date: {variable: value}}."""
+    """Open-Meteo daily arrays -> {date: {variable: value}}. Same function for live and replay."""
+    check_body(body)
     daily = body["daily"]
     return {d: {v: daily[v][i] for v in DAILY_VARS} for i, d in enumerate(daily["time"])}
+
+
+def day_values(fc: dict[str, dict[str, Any]], day: str) -> dict[str, Any]:
+    """The forecast of one day; a missing required value is an error, not a silent zero."""
+    f = fc[day]
+    missing = [v for v in REQUIRED_VARS if f.get(v) is None]
+    if missing:
+        raise DomainError(WEATHER_UNAVAILABLE, f"The forecast has no {', '.join(missing)} for {day}.",
+                          "Report the weather for this day as unknown, or choose other dates.")
+    return f
 
 
 def worst(levels: list[RiskLevel]) -> RiskLevel:
@@ -184,7 +213,7 @@ def assess_weather_risk(route_id: str, start_date: date, overnight_waypoint_ids:
     days: list[DayWeather] = []
     for i, (a, b) in enumerate(zip(stops, stops[1:]), start=1):
         d = dates[i - 1]
-        f = fc[d]
+        f = day_values(fc, d)
         s = day_stats(route, a, b)
         exposed = s["max"] >= w["treeline_m"]
         triggers: list[Trigger] = []
@@ -201,7 +230,7 @@ def assess_weather_risk(route_id: str, start_date: date, overnight_waypoint_ids:
                                     recommendation=("Сніг на маршруті: зимове спорядження й досвід зимових походів; "
                                                     "вище межі лісу — не виходити без зимової підготовки."),
                                     source=src["snow_codes"]))
-        wind = f["wind_speed_10m_max"] or 0.0
+        wind = f["wind_speed_10m_max"]
         if wind >= w["wind_high_ms"]:
             triggers.append(Trigger(code="WIND", unit="m/s", value=wind, threshold=w["wind_high_ms"],
                                     risk=RiskLevel.high if exposed else RiskLevel.medium,
@@ -211,7 +240,7 @@ def assess_weather_risk(route_id: str, start_date: date, overnight_waypoint_ids:
             triggers.append(Trigger(code="WIND", unit="m/s", value=wind, threshold=w["wind_medium_ms"], risk=RiskLevel.medium,
                                     recommendation="Пройти ділянку нижче межі лісу або скоротити день на хребті.",
                                     source=src["wind_medium_ms"]))
-        rain = f["precipitation_sum"] or 0.0
+        rain = f["precipitation_sum"]
         if rain >= w["rain_high_mm"]:
             triggers.append(Trigger(code="RAIN", unit="mm", value=rain, threshold=w["rain_high_mm"], risk=RiskLevel.high,
                                     recommendation="Перенести або скасувати цей день.", source=src["rain_high_mm"]))
@@ -222,7 +251,8 @@ def assess_weather_risk(route_id: str, start_date: date, overnight_waypoint_ids:
 
         night_min = None
         if i < len(stops) - 1:
-            next_day = fc.get(dates[i]) or f  # night after day i ~ minimum of the next morning
+            nxt = fc.get(dates[i])  # night after day i ~ minimum of the next morning
+            next_day = nxt if nxt and nxt.get("temperature_2m_min") is not None else f
             night_min = round(next_day["temperature_2m_min"]
                               + LAPSE_C_PER_KM * (point["elevation_m"] - b["elevation_m"]) / 1000, 1)
             if night_min <= w["night_cold_c"]:

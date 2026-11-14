@@ -62,9 +62,13 @@ def calculate_supplies(section: str, participants: int, adults: int, days: list[
     kits = math.ceil(people / coef("people_per_first_aid_kit"))
     tents = math.ceil(people / tent_capacity)
 
+    # Heaviest moment: all the food at the start, the flask, and (if any night is dry) the extra water
+    # filled at the last source before that night.
+    carried_water = round(start_water + (per_dry_night if dry_nights else 0.0), 1)
+
     def pack(rule_section: str, food_per_day: float, base: float | None, body_kg: float | None) -> PackEstimate:
         food = round(n_days * food_per_day, 1)
-        consumables = round(food + start_water, 1)
+        consumables = round(food + carried_water, 1)
         kg = section_rule(rule_section, "pack_weight_max_kg")
         pct = section_rule(rule_section, "pack_weight_max_pct_body")
         limits = []
@@ -76,7 +80,7 @@ def calculate_supplies(section: str, participants: int, adults: int, days: list[
         limit, source = min(limits, default=(None, "no limit known (give body weight for the % rule)"))
         total = round(consumables + (base or 0.0), 1)
         return PackEstimate(
-            personal_gear_kg=base, food_kg=food, water_kg=start_water, total_kg=total, limit_kg=limit,
+            personal_gear_kg=base, food_kg=food, water_kg=carried_water, total_kg=total, limit_kg=limit,
             limit_source=source,
             remaining_for_gear_kg=None if limit is None else round(limit - consumables, 1),
             within_limit=None if (limit is None or base is None) else total <= limit,
@@ -87,18 +91,18 @@ def calculate_supplies(section: str, participants: int, adults: int, days: list[
 
     warnings: list[str] = []
     if member.remaining_for_gear_kg is not None and member.remaining_for_gear_kg <= 0:
-        warnings.append(f"Food and water alone ({member.food_kg + member.water_kg:.1f} kg) already reach the "
-                        f"participant limit {member.limit_kg} kg. Adults must carry food, plan a resupply, "
-                        "or shorten the hike.")
+        warnings.append(f"Самі їжа й вода ({member.food_kg + member.water_kg:.1f} кг) вже досягають ліміту учасника "
+                        f"{member.limit_kg} кг. Частину їжі мають нести дорослі, потрібне поповнення запасів "
+                        "або коротша мандрівка.")
     elif member.within_limit is False:
-        warnings.append(f"Participant pack {member.total_kg} kg is over the limit {member.limit_kg} kg "
-                        f"({member.limit_source}).")
+        warnings.append(f"Наплічник учасника {member.total_kg} кг перевищує ліміт {member.limit_kg} кг "
+                        f"({member.limit_source}). Перекладіть частину їжі чи групового спорядження дорослим.")
     if participant_base_gear_kg is None:
-        warnings.append("Base gear weight not given (no sourced default exists): weigh a packed rucksack "
-                        "without food and water and pass participant_base_gear_kg.")
+        warnings.append("Вагу спорядження не вказано (джерела для типового значення немає): зважте зібраний "
+                        "наплічник без їжі й води і передайте participant_base_gear_kg.")
     if dry_nights:
-        warnings.append(f"{dry_nights} night(s) without water nearby: carry {water_dry} L extra for the group "
-                        f"({per_dry_night:g} L per person per night).")
+        warnings.append(f"Ночівель без води поруч: {dry_nights}. Групі треба нести додатково {water_dry} л "
+                        f"({per_dry_night:g} л на людину на ночівлю); це враховано у вазі наплічника.")
 
     additions = [f"{pots} казанки ≥3 л, групова ємність для води 5–6 л [S2][S13]"]
     if cold:

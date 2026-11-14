@@ -99,14 +99,20 @@ def fetch_elevations(points: list[tuple[float, float]]) -> dict[str, float]:
     for i in range(0, len(missing), 100):
         batch = missing[i : i + 100]
         delay = 2
-        while True:
-            r = httpx.get(ELEVATION_URL, params={"locations": "|".join(batch)},
-                          timeout=60, headers={"User-Agent": USER_AGENT})
-            if r.status_code == 200 and r.json().get("status") == "OK":
-                break
-            print(f"  elevation HTTP {r.status_code}, retry in {delay}s")
+        for attempt in range(8):  # capped: a daily-quota 429 must not loop forever
+            try:
+                r = httpx.get(ELEVATION_URL, params={"locations": "|".join(batch)},
+                              timeout=60, headers={"User-Agent": USER_AGENT})
+                if r.status_code == 200 and r.json().get("status") == "OK":
+                    break
+                problem = f"HTTP {r.status_code}"
+            except httpx.HTTPError as exc:
+                problem = type(exc).__name__
+            print(f"  elevation {problem}, retry in {delay}s")
             time.sleep(delay)
             delay = min(delay * 2, 60)
+        else:
+            raise SystemExit("Elevation API keeps failing; the cache is saved, re-run later to resume.")
         for k, res in zip(batch, r.json()["results"], strict=True):
             if res.get("elevation") is not None:  # SRTM has rare voids; skip them
                 cache[k] = res["elevation"]
@@ -209,7 +215,11 @@ def poi_kind(tags: dict) -> str | None:
     if tags.get("natural") == "peak":
         return "peak"
     if tags.get("natural") == "water":
-        return "lake"
+        name = (tags.get("name:uk") or tags.get("name") or "").lower()
+        is_pond = "став" in name or tags.get("zoo") or tags.get("attraction")
+        if tags.get("water") in (None, "lake") and not is_pond:
+            return "lake"  # mountain lakes only: ponds, fish ponds, rivers, reservoirs are not "lakes" for a hike
+        return None
     return None
 
 

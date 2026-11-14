@@ -119,7 +119,7 @@ Details and rate limits: [docs/data-and-replay.md](docs/data-and-replay.md).
 
 ## Checks
 ```bash
-uv run pytest -q                          # 29 tests: domain logic, schemas over in-memory MCP, the agent workflow (no network)
+uv run pytest -q                          # 39 tests: domain logic, schemas over in-memory MCP, the agent workflow (no network)
 uv run python scripts/smoke_server.py     # all 4 tools over real MCP, incl. error cases and an empty result
 uv run check-obsidian                     # Obsidian discovery + one vault_read
 uv run python scripts/reset_demo.py       # clean the demo vault before a rehearsal
