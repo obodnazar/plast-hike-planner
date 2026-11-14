@@ -13,11 +13,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from plast_trail.data import load_routes, rules_status, section_rule
+from plast_trail.data import load_routes, rules_status, section_rule, water_distance_km
 from plast_trail.models import FindRoutesResult, OvernightOption, RouteSummary
 
 OVERNIGHT_PRIORITY = {"hut": 0, "campsite": 1, "shelter": 2, "water": 3, "lake": 4}
-WATER_RADIUS_KM = 0.3
 MIN_KM_PER_DAY = 3.0
 MIN_DAY_KM = 1.0  # night spots must be at least this far from both ends
 
@@ -36,7 +35,6 @@ def daily_targets(section: str) -> tuple[float, float | None]:
 def overnight_options(route: dict[str, Any], section: str, limit: int = 12) -> list[OvernightOption]:
     """Allowed night spots, one per 0.5 km stretch (best kind wins), with a water flag."""
     allowed = set(section_rule(section, "overnight_allowed_kinds")["value"]) - {"start", "finish", "peak"}
-    water_kms = [w["km"] for w in route["waypoints"] if w["kind"] == "water"]
     best: dict[int, dict[str, Any]] = {}
     total = route["waypoints"][-1]["km"]
     for w in route["waypoints"]:
@@ -55,7 +53,7 @@ def overnight_options(route: dict[str, Any], section: str, limit: int = 12) -> l
     return [
         OvernightOption(
             id=w["id"], kind=w["kind"], name=w["name"], km=w["km"], elevation_m=w["elevation_m"],
-            water_nearby=w["kind"] == "water" or any(abs(k - w["km"]) <= WATER_RADIUS_KM for k in water_kms),
+            water_nearby=water_distance_km(route, w["km"]) is not None,
         )
         for w in picked
     ]

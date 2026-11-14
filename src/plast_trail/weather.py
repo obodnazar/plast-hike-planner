@@ -111,7 +111,8 @@ def fetch_live(route_id: str, point: dict[str, float]) -> tuple[dict[str, Any], 
                 break
         time.sleep(2 ** attempt)
     raise DomainError(WEATHER_UNAVAILABLE, f"Open-Meteo did not answer: {last_error}",
-                      "Retry later, or run the server with WEATHER_MODE=replay to use recorded forecasts.")
+                      "Do not retry now: report the weather as unknown to the user. "
+                      "(Operator: WEATHER_MODE=replay serves recorded forecasts.)")
 
 
 def save_fixture(route_id: str, params: dict[str, Any], body: dict[str, Any], fetched: str) -> Path:
@@ -136,8 +137,10 @@ def load_fixture(route_id: str, needed: list[str]) -> tuple[dict[str, Any], str]
     raise DomainError(
         WEATHER_FIXTURE_MISSING,
         f"No recorded forecast for {route_id} covering {needed[0]}..{needed[-1]}.",
-        ("Recorded ranges for this route: " + ", ".join(ranges)) if ranges
-        else "No fixtures for this route. Record one: WEATHER_MODE=record, or use scripts/record_weather.py.",
+        (f"Choose a start_date so that every day falls inside a recorded range ({', '.join(ranges)}), "
+         "or report the weather as unknown.") if ranges
+        else "No recorded forecast for this route: report the weather as unknown. "
+             "(Operator: run scripts/record_weather.py.)",
     )
 
 
@@ -170,7 +173,8 @@ def assess_weather_risk(route_id: str, start_date: date, overnight_waypoint_ids:
         if start_date < today or date.fromisoformat(needed[-1]) > last_ok:
             raise DomainError(DATE_OUT_OF_RANGE,
                               f"Forecast covers {today}..{last_ok}; plan needs {needed[0]}..{needed[-1]}.",
-                              "Pick dates inside the forecast window.")
+                              "Choose dates inside the forecast window, or report the weather as unknown; "
+                              "do not retry the same dates.")
         body, fetched = fetch_live(route_id, point)
 
     fc = parse_forecast(body)
@@ -187,32 +191,32 @@ def assess_weather_risk(route_id: str, start_date: date, overnight_waypoint_ids:
 
         if f["weather_code"] in w["thunderstorm_codes"]:
             lvl = RiskLevel.high if exposed else RiskLevel.medium
-            triggers.append(Trigger(code="THUNDERSTORM", value=f["weather_code"], threshold=95, risk=lvl,
+            triggers.append(Trigger(code="THUNDERSTORM", unit="wmo_code", value=f["weather_code"], threshold=95, risk=lvl,
                                     recommendation=("Не виходити на хребет і відкриті вершини в час грози; "
                                                     "перенести хребтову ділянку або обрати лісовий варіант."),
                                     source=src["thunderstorm_codes"] + "; " + src["wind_medium_ms"].split(";")[0]))
         if f["weather_code"] in w["snow_codes"]:
-            triggers.append(Trigger(code="SNOW", value=f["weather_code"], threshold=71,
+            triggers.append(Trigger(code="SNOW", unit="wmo_code", value=f["weather_code"], threshold=71,
                                     risk=RiskLevel.high if exposed else RiskLevel.medium,
                                     recommendation=("Сніг на маршруті: зимове спорядження й досвід зимових походів; "
                                                     "вище межі лісу — не виходити без зимової підготовки."),
                                     source=src["snow_codes"]))
         wind = f["wind_speed_10m_max"] or 0.0
         if wind >= w["wind_high_ms"]:
-            triggers.append(Trigger(code="WIND", value=wind, threshold=w["wind_high_ms"],
+            triggers.append(Trigger(code="WIND", unit="m/s", value=wind, threshold=w["wind_high_ms"],
                                     risk=RiskLevel.high if exposed else RiskLevel.medium,
                                     recommendation="Не виходити вище межі лісу; перенести високогірний день.",
                                     source=src["wind_high_ms"]))
         elif wind >= w["wind_medium_ms"] and exposed:
-            triggers.append(Trigger(code="WIND", value=wind, threshold=w["wind_medium_ms"], risk=RiskLevel.medium,
+            triggers.append(Trigger(code="WIND", unit="m/s", value=wind, threshold=w["wind_medium_ms"], risk=RiskLevel.medium,
                                     recommendation="Пройти ділянку нижче межі лісу або скоротити день на хребті.",
                                     source=src["wind_medium_ms"]))
         rain = f["precipitation_sum"] or 0.0
         if rain >= w["rain_high_mm"]:
-            triggers.append(Trigger(code="RAIN", value=rain, threshold=w["rain_high_mm"], risk=RiskLevel.high,
+            triggers.append(Trigger(code="RAIN", unit="mm", value=rain, threshold=w["rain_high_mm"], risk=RiskLevel.high,
                                     recommendation="Перенести або скасувати цей день.", source=src["rain_high_mm"]))
         elif rain >= w["rain_medium_mm"]:
-            triggers.append(Trigger(code="RAIN", value=rain, threshold=w["rain_medium_mm"], risk=RiskLevel.medium,
+            triggers.append(Trigger(code="RAIN", unit="mm", value=rain, threshold=w["rain_medium_mm"], risk=RiskLevel.medium,
                                     recommendation="Без бродів; не ставати на ночівлю біля потоків і в руслах.",
                                     source=src["rain_medium_mm"]))
 
@@ -222,7 +226,7 @@ def assess_weather_risk(route_id: str, start_date: date, overnight_waypoint_ids:
             night_min = round(next_day["temperature_2m_min"]
                               + LAPSE_C_PER_KM * (point["elevation_m"] - b["elevation_m"]) / 1000, 1)
             if night_min <= w["night_cold_c"]:
-                triggers.append(Trigger(code="NIGHT_COLD", value=night_min, threshold=w["night_cold_c"],
+                triggers.append(Trigger(code="NIGHT_COLD", unit="°C", value=night_min, threshold=w["night_cold_c"],
                                         risk=RiskLevel.medium,
                                         recommendation="Зимові спальники й каремати, досвід холодних ночівель; або нижча ночівля.",
                                         source=src["night_cold_c"]))
@@ -236,8 +240,10 @@ def assess_weather_risk(route_id: str, start_date: date, overnight_waypoint_ids:
             risk=worst([t.risk for t in triggers]), triggers=triggers,
         ))
 
+    nights = [d.night_spot_min_c for d in days if d.night_spot_min_c is not None]
     return WeatherResult(
-        route_id=route_id, start_date=start_date.isoformat(), mode=m, forecast_point=point, fetched_at=fetched,
+        route_id=route_id, start_date=start_date.isoformat(), mode="replay" if m == "replay" else "live",
+        forecast_point=point, fetched_at=fetched, coldest_night_c=min(nights) if nights else None,
         days=days, overall_risk=worst([d.risk for d in days]), rules_status=rules_status(),
         source="Open-Meteo forecast API (CC BY 4.0), daily values at the route's highest point",
     )

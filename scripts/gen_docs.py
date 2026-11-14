@@ -87,9 +87,9 @@ TOOL_NOTES: dict[str, dict[str, Any]] = {
             ("Open-Meteo down / timeout / HTTP 5xx after 3 tries", "code `WEATHER_UNAVAILABLE`, hint suggests replay mode"),
             ("Unknown route / waypoint / order", "same codes as validate_hike_plan"),
         ],
-        "side_effects": "`live`: one HTTPS GET to api.open-meteo.com per route per 30 min (in-memory cache, ≥1 s between calls). "
-                        "`record`: same, plus writes `fixtures/open-meteo/<route>_<first-day>.json`. `replay` (default): "
-                        "reads fixtures only, no network.",
+        "side_effects": "No writes. `live`: one HTTPS GET to api.open-meteo.com per route per 30 min (in-memory cache, "
+                        "≥1 s between calls). `replay` (default): reads fixtures only, no network. Recording fixtures is "
+                        "done outside the tool by `scripts/record_weather.py` (the server refuses WEATHER_MODE=record).",
         "example": {"route_id": "r8613349", "start_date": "2026-11-23", "overnight_waypoint_ids": ["w30", "w56"]},
     },
     "calculate_supplies": {
@@ -97,17 +97,18 @@ TOOL_NOTES: dict[str, dict[str, Any]] = {
                    "the coldest night from assess_weather_risk and returns food, water, gas, tents, stoves, pots, "
                    "first-aid kits and the pack weight against the section's limit. Every coefficient is echoed in "
                    "`assumptions` with its source, so any number can be traced.",
-        "processing": "Food = days × people × kg/day by section (0.9; новацтво 0.72); water = max(3 l, 1 l camp + 0.5 l per "
+        "processing": "Food = number of days × people × kg/day by section (0.9; новацтво 0.72); water = max(3 l, 1 l camp + 0.5 l per "
                       "walking hour); +1.5 l per person per dry night; gas 25 g/person/day ×1.5 with frost; 1 stove + 3 pots "
                       "per 6; 1 first-aid kit per 10; tents by capacity. Pack = food + 1 l water (+ measured base gear); "
                       "limit = min(9 kg, % of the lightest body weight). No invented base-gear default.",
         "errors": [
-            ("Schema violations (empty `days`, >7 days, km > 40, tent_capacity not 2/3/4)", "`isError: true`, pydantic message"),
+            ("Schema violations (empty `day_loads`, >7 days, km > 40, tent_capacity not 2/3/4)", "`isError: true`, pydantic message"),
+            ("`dry_nights` larger than the number of nights", "code `INVALID_INPUT`"),
             ("A coefficient missing in rules.yaml", "code `DATA_UNAVAILABLE`, names the missing key"),
         ],
         "side_effects": "None.",
         "example": {"section": "yunatstvo", "participants": 10, "adults": 2,
-                    "days": [{"km": 11.3, "ascent_m": 201, "walking_hours": 3.3},
+                    "day_loads": [{"km": 11.3, "ascent_m": 201, "walking_hours": 3.3},
                              {"km": 11.0, "ascent_m": 1087, "walking_hours": 5.2},
                              {"km": 11.0, "ascent_m": 31, "walking_hours": 2.8}],
                     "dry_nights": 0, "night_min_c": -5.9, "lightest_body_weight_kg": 40,
@@ -281,8 +282,8 @@ async def custom_contracts() -> list[str]:
          "- **Server instructions** (sent at `initialize`) describe the typical flow: find → validate (loop) → weather (loop) → supplies.", "",
          "## Error model (all tools)", "",
          "| Situation | What the caller gets |", "|---|---|",
-         "| Domain failure (unknown route, missing fixture, …) | `isError: true`; text = `{\"error\": {\"code\": \"...\", \"message\": \"...\", \"hint\": \"...\"}}` |",
-         "| Arguments violate the input schema | `isError: true`; FastMCP/pydantic validation message; tool body never runs |",
+         "| Domain failure (unknown route, missing fixture, …) | `isError: true`; text = `Error executing tool <name>: ` (prefix added by FastMCP) + `{\"error\": {\"code\": \"...\", \"message\": \"...\", \"hint\": \"...\"}}`. The hint says what the caller (model) should do next |",
+         "| Arguments violate the input schema (wrong type, out of range, bad pattern, unknown field inside `group_limits`) | `isError: true`; FastMCP/pydantic validation message, no code; the tool body never runs. Unknown top-level arguments are ignored by FastMCP |",
          "| Unexpected bug | `isError: true`; code `INTERNAL_ERROR`; stack trace only in the server log |",
          "| Valid request, nothing found / plan breaks rules | **success** with an empty list (`routes: []`) or `valid: false` + `violations` |",
          "",
@@ -338,7 +339,7 @@ async def obsidian_contract() -> list[str]:
                   f"- **Transport:** streamable HTTP at `{st.obsidian_mcp_url}` over TLS with the plugin's self-signed certificate "
                   "(verified against `certs/obsidian-local-rest-api.crt`, not disabled).",
                   "- **Auth:** `Authorization: Bearer <OBSIDIAN_API_KEY>` from `.env` (git-ignored).",
-                  "- **Vault:** a dedicated `demo-vault/` with fictional data only (`Запити/` requests, `Правила/`, `Плани/` output). "
+                  "- **Vault:** a dedicated `demo-vault/` with fictional data only (`Запити/` requests, `Плани/` output). "
                   "The plugin exposes only the vault that is open, never the personal one.",
                   f"- **Discovered tools ({len(tools)}):** {', '.join(f'`{n}`' for n in tools)}. The agent uses 4 of them.", "",
                   "## Why this server has a role in the project", "",
@@ -364,7 +365,9 @@ async def obsidian_contract() -> list[str]:
                     continue
                 if name == "vault_write":
                     current = result_payload(await s.call_tool("vault_read", {"path": PLAN_NOTE}))
-                    res = await s.call_tool("vault_write", {"path": PLAN_NOTE, "content": current["content"]})
+                    content = current["content"] if isinstance(current, dict) and "content" in current else \
+                        (ROOT / "docs" / "example-run" / "plan.md").read_text(encoding="utf-8")  # the recorded real plan
+                    res = await s.call_tool("vault_write", {"path": PLAN_NOTE, "content": content})
                 else:
                     res = await s.call_tool(name, ex)
                 L += ["**Example input**", "", *code_block(ex), "", "**Example output** (real call)", "",

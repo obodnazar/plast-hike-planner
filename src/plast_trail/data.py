@@ -99,3 +99,12 @@ def ascent_descent(heights: list[float]) -> tuple[int, int]:
             down += ref - h
             ref = h
     return round(up), round(down)
+
+
+def water_distance_km(route: dict[str, Any], km: float) -> float | None:
+    """Distance along the route to the nearest spring, drinking water or lake, if within the rules' radius.
+    Used by both find_routes (water_nearby) and validate_hike_plan (OVERNIGHT_NO_WATER)."""
+    radius = common_rule("overnight_water_radius_km")["value"]
+    dists = [abs(w["km"] - km) for w in route["waypoints"] if w["kind"] in ("water", "lake")]
+    best = min(dists, default=None)
+    return best if best is not None and best <= radius else None

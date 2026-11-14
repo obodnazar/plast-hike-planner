@@ -54,7 +54,7 @@ Typical flow:
    suggestions (they name better waypoint ids) and validate again.
 3. assess_weather_risk(same route and night spots, start_date) -> if a day is high risk,
    change dates, night spots or route, then validate again.
-4. calculate_supplies(days from step 2, dry_nights, night_min_c from step 3).
+4. calculate_supplies(day_loads from step 2 days[], dry_nights from step 2, night_min_c = coldest_night_c from step 3).
 Never invent km, ascent or ids: take them from tool results. Rules are a DRAFT until a
 Plast leader approves them; always mention rules_status to the user.
 """
@@ -93,7 +93,9 @@ mcp = FastMCP("plast-trail", instructions=INSTRUCTIONS)
         "age section, number of days, optional region and wished features (lake, peak, ...). "
         "Returns routes ranked by how well km/day fits the section's target, each with allowed overnight "
         "spots (waypoint ids for validate_hike_plan). Use it first. An empty `routes` list means nothing "
-        "matched (see `excluded` for why); it is not an error."
+        "matched (see `excluded` for why); it is not an error. "
+        "Not a free-text or place-name search, and only the bundled Carpathian dataset. Route ids are "
+        "'r' + the OpenStreetMap relation id; waypoint ids ('w12') are valid only within their own route."
     ),
     annotations=READ_ONLY,
 )
@@ -116,7 +118,10 @@ def find_routes(
         "A plan is route_id + the waypoint ids where the group sleeps, in route order (N ids = N+1 days). "
         "Computes per-day km, ascent, walking time and arrival vs sunset, checks night spots (allowed kind, "
         "water, ridge), number of adults and group size. Returns valid=false with violations; each violation "
-        "has a concrete suggestion, often a better waypoint id. Re-validate after every change until valid=true."
+        "has a concrete suggestion, often a better waypoint id. Re-validate after every change until valid=true. "
+        "Use only a route_id from find_routes and night spots from its overnight_options; never invent ids. "
+        "Warnings do not make valid=false but must be reported to the user together with rules_status. "
+        "The number of night spots fixes the number of days: do not add nights without the user's consent."
     ),
     annotations=READ_ONLY,
 )
@@ -129,7 +134,7 @@ def validate_hike_plan(
     overnight_waypoint_ids: Annotated[list[Annotated[str, Field(pattern=r"^w\d+$")]], Field(
         max_length=6, description="Night spots in route order, e.g. ['w30', 'w56']; [] for a one-day hike")] = [],  # noqa: B006
     start_date: Annotated[date | None, Field(description="First day, YYYY-MM-DD; enables the sunset check")] = None,
-    start_time: Annotated[str | None, Field(pattern=r"^\d{2}:\d{2}$", description="Daily start time HH:MM, default from rules (08:00)")] = None,
+    start_time: Annotated[str | None, Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$", description="Daily start time HH:MM (24 h), default from rules (08:00)")] = None,
     group_limits: Annotated[GroupLimits | None, Field(description="Stricter limits from the leader's request note")] = None,
 ) -> ValidationResult:
     return validation.validate_hike_plan(route_id, section.value, participants, adults, overnight_waypoint_ids,
@@ -142,8 +147,10 @@ def validate_hike_plan(
         "Weather risk for each day of a plan (same route_id and overnight_waypoint_ids as validate_hike_plan) "
         "starting on start_date: thunderstorm, snow, wind and rain at the route's highest point, and night cold "
         "at each night spot. Returns per-day risk low/medium/high with triggers and recommendations. "
-        "If any day is high, change dates, night spots or route and validate again. "
-        "Data: Open-Meteo forecast (16 days); in replay mode, recorded genuine responses."
+        "If any day is high, change dates or route and validate again. "
+        "Call it only after validate_hike_plan returned valid=true, with the same start_date. "
+        "Not a general weather lookup. Data: Open-Meteo forecast (16 days ahead); in replay mode, recorded "
+        "genuine responses, so only recorded dates work."
     ),
     annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
 )
@@ -161,9 +168,9 @@ def assess_weather_risk(
     title="Calculate supplies and pack weight",
     description=(
         "Compute food, water, cooking gas, tents, stoves, pots, first-aid kits and pack weights for a "
-        "validated plan. Pass days[] (km, ascent_m, walking_hours) exactly as returned by validate_hike_plan, "
-        "dry_nights = number of OVERNIGHT_NO_WATER warnings, night_min_c = lowest night_spot_min_c from "
-        "assess_weather_risk. Every coefficient used is listed in `assumptions` with its source."
+        "validated plan. Call it last. Pass day_loads = one object per day copied from validate_hike_plan "
+        "days[] (km, ascent_m, walking_hours), dry_nights = validate_hike_plan dry_nights, night_min_c = "
+        "assess_weather_risk coldest_night_c. Every coefficient used is listed in `assumptions` with its source."
     ),
     annotations=READ_ONLY,
 )
@@ -172,15 +179,18 @@ def calculate_supplies(
     section: Annotated[Section, Field(description="Plast age section of the participants")],
     participants: Annotated[int, Field(ge=1, le=60, description="Participants of the section (same as in validate_hike_plan)")],
     adults: Annotated[int, Field(ge=0, le=30, description="Adult leaders")],
-    days: Annotated[list[DayLoad], Field(min_length=1, max_length=7, description="Per-day loads from validate_hike_plan")],
-    dry_nights: Annotated[int, Field(ge=0, le=6, description="Nights without water nearby")] = 0,
-    night_min_c: Annotated[float | None, Field(ge=-40, le=30, description="Coldest night at the night spots, °C")] = None,
+    day_loads: Annotated[list[DayLoad], Field(min_length=1, max_length=7, description="Array with one object per hiking day (NOT a number): km, ascent_m, walking_hours copied from validate_hike_plan days[]")],
+    dry_nights: Annotated[int, Field(ge=0, le=6, description="validate_hike_plan dry_nights: night spots without water nearby")] = 0,
+    night_min_c: Annotated[float | None, Field(ge=-40, le=30, description="assess_weather_risk coldest_night_c, °C; omit if the weather was not assessed")] = None,
     tent_capacity: Annotated[Literal[2, 3, 4], Field(description="People per tent")] = 3,
     lightest_body_weight_kg: Annotated[float | None, Field(ge=15, le=150, description="Body weight of the lightest participant, for the % body-weight pack rule")] = None,
     participant_base_gear_kg: Annotated[float | None, Field(ge=1, le=25, description="Measured weight of a participant's packed rucksack without food and water")] = None,
     adult_base_gear_kg: Annotated[float | None, Field(ge=1, le=30, description="Same for an adult leader")] = None,
 ) -> SuppliesResult:
-    return supplies.calculate_supplies(section.value, participants, adults, days, dry_nights, night_min_c,
+    if dry_nights > len(day_loads) - 1:
+        raise DomainError("INVALID_INPUT", f"dry_nights={dry_nights} but a {len(day_loads)}-day plan has only "
+                          f"{len(day_loads) - 1} night(s).", "Pass validate_hike_plan dry_nights.").to_tool_error()
+    return supplies.calculate_supplies(section.value, participants, adults, day_loads, dry_nights, night_min_c,
                                        tent_capacity, lightest_body_weight_kg, participant_base_gear_kg,
                                        adult_base_gear_kg)
 
@@ -200,6 +210,9 @@ def main() -> None:
         meta = dataset_meta()
         status = rules_status()
         wmode = weather.mode()
+        if wmode == "record":
+            raise DomainError("INVALID_INPUT", "WEATHER_MODE=record is not served by the tool",
+                              "Record fixtures with: uv run python scripts/record_weather.py")
     except DomainError as exc:
         sys.exit(f"Cannot start: {exc.code}: {exc.message}. {exc.hint}")
     log.info("plast-trail: %d routes (OSM snapshot %s), rules: %s, weather mode: %s",

@@ -17,6 +17,7 @@ from plast_trail.data import (
     ascent_descent,
     common_rule,
     get_route,
+    water_distance_km,
     load_rules,
     profile_between,
     rules_status,
@@ -84,7 +85,8 @@ def resolve_night_spots(route: dict[str, Any], ids: list[str]) -> list[dict[str,
             raise DomainError(
                 WAYPOINT_NOT_FOUND,
                 f"Route {route['id']} has no waypoint '{wid}'.",
-                f"Valid ids are w0..{last_id}; take night spots from find_routes overnight_options.",
+                f"Use night spots from find_routes overnight_options for {route['id']}, e.g. "
+                f"{', '.join(night_spot_examples(route))}. Never invent ids.",
             )
         if wid in ("w0", last_id):
             raise DomainError(WAYPOINT_ORDER, f"'{wid}' is the start or finish, not a night spot.",
@@ -107,6 +109,15 @@ def resolve_night_spots(route: dict[str, Any], ids: list[str]) -> list[dict[str,
     return spots
 
 
+def night_spot_examples(route: dict[str, Any], n: int = 6) -> list[str]:
+    """A few real night-spot ids of this route, spread along it (for error hints)."""
+    total = route["waypoints"][-1]["km"]
+    ids = [w["id"] for w in route["waypoints"]
+           if w["kind"] in ("hut", "campsite", "shelter", "water", "lake") and MIN_DAY_KM <= w["km"] <= total - MIN_DAY_KM]
+    step = max(1, len(ids) // n)
+    return ids[::step][:n] or ["(this route has no night spots: use another route)"]
+
+
 def wp_model(w: dict[str, Any]) -> Waypoint:
     return Waypoint(id=w["id"], kind=w["kind"], name=w["name"], km=w["km"], elevation_m=w["elevation_m"])
 
@@ -126,13 +137,6 @@ def day_stats(route: dict[str, Any], a: dict[str, Any], b: dict[str, Any]) -> di
         "top": {"km": top[0], "lat": top[1], "lon": top[2], "elevation_m": top[3]},
         "end_lat": pts[-1][1], "end_lon": pts[-1][2],
     }
-
-
-def water_distance_km(route: dict[str, Any], km: float) -> float | None:
-    radius = common_rule("overnight_water_radius_km")["value"]
-    dists = [abs(w["km"] - km) for w in route["waypoints"] if w["kind"] in ("water", "lake")]
-    best = min(dists, default=None)
-    return best if best is not None and best <= radius else None
 
 
 def ridge_risk(route: dict[str, Any], km: float, elevation: int) -> bool:
@@ -324,4 +328,5 @@ def validate_hike_plan(route_id: str, section: str, participants: int, adults: i
         rules_status=rules_status(), route_id=route["id"], route_name=route["name"], section=section,
         days=days, total_km=round(sum(d.km for d in days), 1), total_ascent_m=sum(d.ascent_m for d in days),
         violations=violations, applied_limits=applied, documents=docs,
+        dry_nights=sum(1 for v in violations if v.code == "OVERNIGHT_NO_WATER"),
     )

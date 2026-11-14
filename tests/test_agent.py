@@ -156,3 +156,50 @@ def test_missing_request_note_lists_existing_requests(capsys):
 
     assert asyncio.run(go()) == 1
     assert "Наявні запити: Запити/Мандрівка гуртка Сокіл.md" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ schema contracts over real MCP (P2)
+def call(tool: str, args: dict):
+    async def go():
+        async with create_connected_server_and_client_session(plast_trail_server) as session:
+            tools = {t.name: t for t in (await session.list_tools()).tools}
+            return tools, await session.call_tool(tool, args)
+    return asyncio.run(go())
+
+
+PLAN = {"route_id": "r8613349", "section": "yunatstvo", "participants": 10, "adults": 2,
+        "overnight_waypoint_ids": ["w30", "w56"], "start_date": "2026-11-23"}
+
+
+def test_invalid_time_and_unknown_limit_are_rejected_by_the_schema():
+    _, res = call("validate_hike_plan", {**PLAN, "start_time": "12:99"})
+    assert res.isError
+    _, res = call("validate_hike_plan", {**PLAN, "group_limits": {"max_km_per_dayy": 5}})
+    assert res.isError and "extra" in res.content[0].text.lower()
+
+
+def test_outputs_are_typed_and_chain_into_supplies():
+    tools, v = call("validate_hike_plan", PLAN)
+    schema = json.dumps(tools["validate_hike_plan"].outputSchema)
+    assert '"OVERNIGHT_NO_WATER"' in schema and '"campsite"' in schema   # enums, not free strings
+    v = v.structuredContent
+    _, w = call("assess_weather_risk", {k: PLAN[k] for k in ("route_id", "start_date", "overnight_waypoint_ids")})
+    w = w.structuredContent
+    assert all(t["unit"] in ("wmo_code", "m/s", "mm", "°C") for d in w["days"] for t in d["triggers"])
+    assert w["coldest_night_c"] == min(d["night_spot_min_c"] for d in w["days"] if d["night_spot_min_c"] is not None)
+    _, s = call("calculate_supplies", {"section": "yunatstvo", "participants": 10, "adults": 2,
+                                       "day_loads": v["days"], "dry_nights": v["dry_nights"],
+                                       "night_min_c": w["coldest_night_c"]})
+    assert not s.isError and s.structuredContent["num_days"] == 3        # days[] can be passed as-is
+
+
+def test_dry_nights_cannot_exceed_nights():
+    _, res = call("calculate_supplies", {"section": "yunatstvo", "participants": 10, "adults": 2,
+                                         "day_loads": [{"km": 5, "ascent_m": 100, "walking_hours": 2}], "dry_nights": 3})
+    assert res.isError and "INVALID_INPUT" in res.content[0].text
+
+
+def test_out_of_range_limit_from_the_note_is_dropped_and_reported():
+    from plast_agent.workflow import sanitise_request
+    d, notes = sanitise_request({**PARSED, "max_km_per_day": 50})
+    assert d["max_km_per_day"] is None and notes and d["start_time"] == "08:00"

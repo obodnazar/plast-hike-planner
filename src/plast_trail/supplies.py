@@ -111,7 +111,7 @@ def calculate_supplies(section: str, participants: int, adults: int, days: list[
         additions.append("Налобні ліхтарі з запасними батареями: довгий ходовий день")
 
     return SuppliesResult(
-        people=people, days=n_days, kcal_per_person_day=kcal, food_kg_per_person=round(n_days * food_p, 1),
+        people=people, num_days=n_days, kcal_per_person_day=kcal, food_kg_per_person=round(n_days * food_p, 1),
         food_kg_group=food_group, water_l_per_person_by_day=water_by_day, water_to_carry_for_dry_nights_l=water_dry,
         gas_g_group=gas, stoves=stoves, pots=pots, tents=tents, first_aid_kits=kits,
         pack_participant=member, pack_adult=adult, gear_additions=additions, warnings=warnings,

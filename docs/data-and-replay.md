@@ -6,7 +6,7 @@
 |---|---|---|---|---|
 | Hiking routes, springs, huts, shelters, campsites, peaks, lakes, settlements | OpenStreetMap via the Overpass API | ODbL 1.0, © OpenStreetMap contributors | built once into `data/routes.json` | no |
 | Heights of route points | SRTM 30 m (NASA) via the OpenTopoData public API | public domain | built once into `data/routes.json` | no |
-| Weather forecast | Open-Meteo forecast API | CC BY 4.0 | `assess_weather_risk` | only in `live`/`record` mode |
+| Weather forecast | Open-Meteo forecast API | CC BY 4.0 | `assess_weather_risk` | only in `live` mode (and when recording fixtures) |
 | Plast norms and coefficients | 51 public sources (Plast documents, state norms, outdoor guidance), see [research/plast-norms-research.md](../research/plast-norms-research.md) | n/a | `data/rules.yaml` (DRAFT, every value with its source) | no |
 
 ## The route dataset
@@ -29,7 +29,7 @@ Snapshot in the committed file: OSM `2026-11-14T19:08:36Z`, 121 routes (skipped:
 |---|---|---|---|
 | `replay` (default) | none | nothing | demo, tests, offline |
 | `live` | Open-Meteo | nothing | real planning |
-| `record` | Open-Meteo | `fixtures/open-meteo/<route>_<first-day>.json` | refreshing fixtures |
+| recording (`scripts/record_weather.py`, not the server) | Open-Meteo | `fixtures/open-meteo/<route>_<first-day>.json` | refreshing fixtures; the server refuses `WEATHER_MODE=record`, so the tool itself never writes |
 
 - **What a fixture is.** One genuine Open-Meteo response per route, saved untouched together with the exact request: `{"recorded_at", "request": {"url", "params"}, "response": <body>}`. The request asks for 16 days of daily values at the route's highest point.
 - **Fidelity.** Replay loads `response` and passes it through the **same** `parse_forecast()` and the same risk scoring as a live call. There is no shortcut that returns a prepared answer. If no recorded file covers the requested dates, the tool returns `WEATHER_FIXTURE_MISSING` with the recorded ranges.

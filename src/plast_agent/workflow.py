@@ -103,6 +103,26 @@ def feedback_text(attempts: list[dict[str, Any]]) -> str:
 
 RISK_ORDER = {"low": 0, "medium": 1, "unknown": 2, "high": 3}
 
+# The tool schemas' bounds. A value outside them is dropped here (and reported), instead of making
+# every validate_hike_plan call fail on the schema.
+LIMIT_BOUNDS = {"max_km_per_day": (1, 40), "max_ascent_per_day_m": (100, 3000),
+                "max_walking_hours_per_day": (1, 12), "max_overnight_elevation_m": (300, 2100),
+                "lightest_body_weight_kg": (15, 150), "participant_base_gear_kg": (1, 25),
+                "adult_base_gear_kg": (1, 30)}
+
+
+def sanitise_request(d: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Keep the parsed request inside what the tools accept; say what was changed."""
+    notes = []
+    for key, (lo, hi) in LIMIT_BOUNDS.items():
+        v = d.get(key)
+        if v is not None and not lo <= v <= hi:
+            notes.append(f"Значення {key}={v} поза межами {lo}–{hi}, тому не враховується; перевірте запит.")
+            d[key] = None
+    d["start_time"] = normalise_time(d.get("start_time"))
+    d["must_include"] = d.get("must_include") or []
+    return d, notes
+
 
 def group_limits(r: dict[str, Any]) -> dict[str, Any]:
     return {k: r[k] for k in ("max_km_per_day", "max_ascent_per_day_m", "max_walking_hours_per_day",
@@ -179,9 +199,11 @@ def build_graph(links: McpLinks, llm: LLM):
         step("2. Розбираю запит (LLM → структуровані поля)")
         req: ParsedRequest = llm.structured(ParsedRequest, PARSE_SYSTEM.format(today=date.today()),
                                             state["request_text"])
-        d = req.model_dump(mode="json")
+        d, notes = sanitise_request(req.model_dump(mode="json"))
         print("    " + json.dumps({k: v for k, v in d.items() if v not in (None, [])}, ensure_ascii=False))
-        return {"request": d}
+        for x in notes:
+            print(f"    {YELLOW}{x}{RESET}")
+        return {"request": d, "search_notes": notes}
 
     async def search_routes(state: State) -> State:
         step("3. Шукаю маршрути (plast-trail.find_routes)")
@@ -189,7 +211,7 @@ def build_graph(links: McpLinks, llm: LLM):
         args = {"section": r["section"], "days": r["days"], "region": r["region"],
                 "must_include": r["must_include"], "max_results": 4}
         args = {k: v for k, v in args.items() if v not in (None, [])}
-        notes = []
+        notes = list(state.get("search_notes", []))
         result = await links.call("plast-trail", "find_routes", args)
         # An empty list is a valid answer: relax the wishes step by step and say so.
         for relax in ("must_include", "region"):
@@ -290,7 +312,8 @@ def build_graph(links: McpLinks, llm: LLM):
         if w["overall_risk"] == "high":
             last["outcome"] = "valid but HIGH weather risk"
             last["feedback"] = [f"Weather {d['date']}: risk {d['risk']}: " + "; ".join(
-                f"{t['code']} {t['value']} (threshold {t['threshold']}): {t['recommendation']}" for t in d["triggers"])
+                f"{t['code']} {t['value']:g} {t['unit']} (threshold {t['threshold']:g}): {t['recommendation']}"
+                for t in d["triggers"])
                 for d in w["days"] if d["risk"] == "high"]
             # Probe the other allowed start dates for the same plan: facts for the next proposal.
             r = state["request"]
@@ -329,18 +352,17 @@ def build_graph(links: McpLinks, llm: LLM):
     async def supplies(state: State) -> State:
         step("7. Рахую запаси (plast-trail.calculate_supplies)")
         r, v, w = state["request"], state["validation"], state["weather"]
-        nights = [d["night_spot_min_c"] for d in w.get("days", []) if d.get("night_spot_min_c") is not None]
         args = {"section": r["section"], "participants": r["participants"], "adults": r["adults"],
-                "days": [{"km": d["km"], "ascent_m": d["ascent_m"], "walking_hours": d["walking_hours"]}
-                         for d in v["days"]],
-                "dry_nights": sum(1 for x in v["violations"] if x["code"] == "OVERNIGHT_NO_WATER")}
+                "day_loads": [{"km": d["km"], "ascent_m": d["ascent_m"], "walking_hours": d["walking_hours"]}
+                              for d in v["days"]],
+                "dry_nights": v["dry_nights"]}
         for k_in, k_out in (("lightest_body_weight_kg", "lightest_body_weight_kg"),
                             ("participant_base_gear_kg", "participant_base_gear_kg"),
                             ("adult_base_gear_kg", "adult_base_gear_kg")):
             if r.get(k_in):
                 args[k_out] = r[k_in]
-        if nights:
-            args["night_min_c"] = min(nights)
+        if w.get("coldest_night_c") is not None:
+            args["night_min_c"] = w["coldest_night_c"]
         try:
             s = await links.call("plast-trail", "calculate_supplies", args)
         except McpCallError as exc:  # the plan stays valid; the note says supplies could not be computed

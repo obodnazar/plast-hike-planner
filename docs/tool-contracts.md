@@ -14,8 +14,8 @@ Discovered tools: `find_routes`, `validate_hike_plan`, `assess_weather_risk`, `c
 
 | Situation | What the caller gets |
 |---|---|
-| Domain failure (unknown route, missing fixture, …) | `isError: true`; text = `{"error": {"code": "...", "message": "...", "hint": "..."}}` |
-| Arguments violate the input schema | `isError: true`; FastMCP/pydantic validation message; tool body never runs |
+| Domain failure (unknown route, missing fixture, …) | `isError: true`; text = `Error executing tool <name>: ` (prefix added by FastMCP) + `{"error": {"code": "...", "message": "...", "hint": "..."}}`. The hint says what the caller (model) should do next |
+| Arguments violate the input schema (wrong type, out of range, bad pattern, unknown field inside `group_limits`) | `isError: true`; FastMCP/pydantic validation message, no code; the tool body never runs. Unknown top-level arguments are ignored by FastMCP |
 | Unexpected bug | `isError: true`; code `INTERNAL_ERROR`; stack trace only in the server log |
 | Valid request, nothing found / plan breaks rules | **success** with an empty list (`routes: []`) or `valid: false` + `violations` |
 
@@ -33,7 +33,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 
 **Model-facing description (exact):**
 
-> Find marked hiking routes in the Ukrainian Carpathians (OpenStreetMap) that suit a Plast group: age section, number of days, optional region and wished features (lake, peak, ...). Returns routes ranked by how well km/day fits the section's target, each with allowed overnight spots (waypoint ids for validate_hike_plan). Use it first. An empty `routes` list means nothing matched (see `excluded` for why); it is not an error.
+> Find marked hiking routes in the Ukrainian Carpathians (OpenStreetMap) that suit a Plast group: age section, number of days, optional region and wished features (lake, peak, ...). Returns routes ranked by how well km/day fits the section's target, each with allowed overnight spots (waypoint ids for validate_hike_plan). Use it first. An empty `routes` list means nothing matched (see `excluded` for why); it is not an error. Not a free-text or place-name search, and only the bundled Carpathian dataset. Route ids are 'r' + the OpenStreetMap relation id; waypoint ids ('w12') are valid only within their own route.
 
 **Input schema**
 
@@ -62,7 +62,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 | Field | Type | Meaning |
 |---|---|---|
 | `id` | string | Waypoint id within its route, e.g. 'w12'. Pass these ids to validate_hike_plan. |
-| `kind` | string | start \| finish \| water \| hut \| shelter \| campsite \| peak \| lake |
+| `kind` | enum: `start` / `finish` / `water` / `hut` / `shelter` / `campsite` / `peak` / `lake` | What the point is; start/finish are the route ends |
 | `name` | string | Name from OpenStreetMap, may be empty |
 | `km` | number | Distance from the route start, km |
 | `elevation_m` | integer | Height above sea level, m (OSM tag or SRTM profile) |
@@ -76,7 +76,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 |---|---|---|
 | `id` | string | Route id; pass it to the other tools |
 | `name` | string | Route name from OpenStreetMap |
-| `region` | string | Mountain area |
+| `region` | enum: `chornohora` / `svydovets` / `gorgany` / `marmarosy` / `yaremche-vorokhta` | Mountain area |
 | `length_km` | number | Length along the trail, km |
 | `ascent_m` | integer | Total climb from start to finish, m |
 | `descent_m` | integer | Total descent from start to finish, m |
@@ -85,8 +85,8 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 | `start` | string | Name of the start point |
 | `finish` | string | Name of the finish point |
 | `avg_km_per_day` | number | length_km / days |
-| `features` | array of string | Kinds of points of interest on the route |
-| `overnight_options` | array of object `OvernightOption` | Points where the group may stop for the night, allowed for this section, deduplicated |
+| `features` | array of enum: `lake` / `peak` / `water` / `hut` / `shelter` / `campsite` | Kinds of points of interest on the route |
+| `overnight_options` | array of object `OvernightOption` | Up to 12 night spots allowed for this section, spread along the route (at least 1 km from both ends). validate_hike_plan suggestions only name ids from this list. Empty for a one-day hike |
 | `fit_score` | number | How well the length suits the daily distance, 1 = ideal |
 | `fit_reasons` | array of string | Plain-language reasons behind the score |
 
@@ -231,7 +231,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 
 **Model-facing description (exact):**
 
-> Check a concrete hike plan against Plast safety rules and the group's own limits. A plan is route_id + the waypoint ids where the group sleeps, in route order (N ids = N+1 days). Computes per-day km, ascent, walking time and arrival vs sunset, checks night spots (allowed kind, water, ridge), number of adults and group size. Returns valid=false with violations; each violation has a concrete suggestion, often a better waypoint id. Re-validate after every change until valid=true.
+> Check a concrete hike plan against Plast safety rules and the group's own limits. A plan is route_id + the waypoint ids where the group sleeps, in route order (N ids = N+1 days). Computes per-day km, ascent, walking time and arrival vs sunset, checks night spots (allowed kind, water, ridge), number of adults and group size. Returns valid=false with violations; each violation has a concrete suggestion, often a better waypoint id. Re-validate after every change until valid=true. Use only a route_id from find_routes and night spots from its overnight_options; never invent ids. Warnings do not make valid=false but must be reported to the user together with rules_status. The number of night spots fixes the number of days: do not add nights without the user's consent.
 
 **Input schema**
 
@@ -243,7 +243,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 | `adults` | integer | yes | ≥ `0`, ≤ `30` | — | Adult leaders accompanying the group |
 | `overnight_waypoint_ids` | array of string | no | max items `6`, items: pattern `^w\d+$` | `[]` | Night spots in route order, e.g. ['w30', 'w56']; [] for a one-day hike |
 | `start_date` | string (date) \| null | no | — | `null` | First day, YYYY-MM-DD; enables the sunset check |
-| `start_time` | string \| null | no | pattern `^\d{2}:\d{2}$` | `null` | Daily start time HH:MM, default from rules (08:00) |
+| `start_time` | string \| null | no | pattern `^([01]\d\|2[0-3]):[0-5]\d$` | `null` | Daily start time HH:MM (24 h), default from rules (08:00) |
 | `group_limits` | object `GroupLimits` \| null | no | — | `null` | Stricter limits from the leader's request note |
 
 `GroupLimits`: Extra limits from the leader's request note. They can only make rules stricter.
@@ -268,6 +268,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 | `total_km` | number | Sum of the days, km |
 | `total_ascent_m` | integer | Sum of the days' climbs, m |
 | `violations` | array of object `Violation` | Errors and warnings; empty when everything passes |
+| `dry_nights` | integer | Night spots without water within the rules' radius; pass to calculate_supplies |
 | `applied_limits` | object (string → string) | Limit name -> value and where it came from |
 | `documents` | array of string | Paperwork checklist for this group |
 
@@ -288,7 +289,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 | `start_time` | string | Daily start, HH:MM |
 | `est_arrival` | string | Estimated arrival, HH:MM local time |
 | `sunset` | string \| null | Local sunset at the day's end point, if a start date was given |
-| `highest_point` | object | {km, lat, lon, elevation_m} of the day's highest point |
+| `highest_point` | object `RoutePoint` | The day's highest point |
 | `overnight` | object `OvernightCheck` \| null | Check of the night spot after this day, null on the last day |
 
 </details>
@@ -303,16 +304,27 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 
 </details>
 
+<details><summary><code>RoutePoint</code></summary>
+
+| Field | Type | Meaning |
+|---|---|---|
+| `lat` | number | Latitude, WGS84 |
+| `lon` | number | Longitude, WGS84 |
+| `elevation_m` | integer | Height above sea level, m |
+| `km` | number | Distance from the route start, km |
+
+</details>
+
 <details><summary><code>Violation</code></summary>
 
 | Field | Type | Meaning |
 |---|---|---|
-| `code` | string | Stable rule code, e.g. KM_PER_DAY_MAX |
+| `code` | enum: `KM_PER_DAY_MAX` / `KM_PER_DAY_WARN` / `ASCENT_PER_DAY_MAX` / `WALKING_HOURS_MAX` / `ARRIVAL_AFTER_SAFE_TIME` / `OVERNIGHT_KIND_NOT_ALLOWED` / `OVERNIGHT_TOO_HIGH` / `RIDGE_OVERNIGHT` / `OVERNIGHT_NO_WATER` / `TOO_MANY_DAYS` / `TOO_FEW_ADULTS` / `ADULT_RATIO` / `GROUP_TOO_LARGE` / `START_TOO_EARLY` | Stable rule code |
 | `severity` | enum: `error` / `warning` | error blocks the plan, warning does not |
 | `day` | integer \| null | Day number (1-based) or null for the whole plan |
 | `message` | string | What is wrong, with the numbers |
-| `limit` | number \| string \| null | The limit that applies |
-| `actual` | number \| string \| null | The plan's value |
+| `limit` | number \| string \| null | The limit that applies, in the unit of the rule (km, m, h, HH:MM, people, days) |
+| `actual` | number \| string \| null | The plan's value, in the same unit as limit |
 | `source` | string | Where the limit comes from: rules.yaml source text or the group note |
 | `suggestion` | string | Concrete way to fix the plan; may name waypoint ids |
 
@@ -323,7 +335,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 | Field | Type | Meaning |
 |---|---|---|
 | `id` | string | Waypoint id within its route, e.g. 'w12'. Pass these ids to validate_hike_plan. |
-| `kind` | string | start \| finish \| water \| hut \| shelter \| campsite \| peak \| lake |
+| `kind` | enum: `start` / `finish` / `water` / `hut` / `shelter` / `campsite` / `peak` / `lake` | What the point is; start/finish are the route ends |
 | `name` | string | Name from OpenStreetMap, may be empty |
 | `km` | number | Distance from the route start, km |
 | `elevation_m` | integer | Height above sea level, m (OSM tag or SRTM profile) |
@@ -397,10 +409,10 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
       "est_arrival": "15:18",
       "sunset": "16:38",
       "highest_point": {
-        "km": 17.1,
         "lat": 48.16812,
         "lon": 24.43522,
-        "elevation_m": 1541
+        "elevation_m": 1541,
+        "km": 17.1
       },
       "overnight": {
         "waypoint": {
@@ -441,10 +453,10 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
       "est_arrival": "14:12",
       "sunset": "16:37",
       "highest_point": {
-        "km": 18.6,
         "lat": 48.17189,
         "lon": 24.42167,
-        "elevation_m": 2007
+        "elevation_m": 2007,
+        "km": 18.6
       },
       "overnight": null
     }
@@ -474,6 +486,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
     },
     "... 3 more"
   ],
+  "dry_nights": 0,
   "applied_limits": {
     "km_per_day_max": "12 (group note, stricter than rules: 20)",
     "ascent_per_day_max": "none (reported only)",
@@ -494,12 +507,12 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 | Name | `assess_weather_risk` (title: Assess weather risk for a plan) |
 | Purpose | Turns a forecast into decisions. For the same plan (route + night spots) and a start date it returns a risk level per day with the triggers and what to do. A HIGH result sends the agent back to re-plan (other dates or route); the agent also uses it to probe alternative start dates. |
 | Processing | Forecast is taken at the route's highest point (lat, lon, elevation) from Open-Meteo, 16 days. A day is 'exposed' if it reaches above the tree line (1400 m). Triggers: thunderstorm and snow (high if exposed), wind ≥15/≥25 m/s, precipitation ≥15/≥50 mm, night ≤0 °C at the night spot (summit minimum corrected by the 6.5 °C/km lapse rate). |
-| Side effects | `live`: one HTTPS GET to api.open-meteo.com per route per 30 min (in-memory cache, ≥1 s between calls). `record`: same, plus writes `fixtures/open-meteo/<route>_<first-day>.json`. `replay` (default): reads fixtures only, no network. |
+| Side effects | No writes. `live`: one HTTPS GET to api.open-meteo.com per route per 30 min (in-memory cache, ≥1 s between calls). `replay` (default): reads fixtures only, no network. Recording fixtures is done outside the tool by `scripts/record_weather.py` (the server refuses WEATHER_MODE=record). |
 | Annotations | readOnly=True, idempotent=True, openWorld=True |
 
 **Model-facing description (exact):**
 
-> Weather risk for each day of a plan (same route_id and overnight_waypoint_ids as validate_hike_plan) starting on start_date: thunderstorm, snow, wind and rain at the route's highest point, and night cold at each night spot. Returns per-day risk low/medium/high with triggers and recommendations. If any day is high, change dates, night spots or route and validate again. Data: Open-Meteo forecast (16 days); in replay mode, recorded genuine responses.
+> Weather risk for each day of a plan (same route_id and overnight_waypoint_ids as validate_hike_plan) starting on start_date: thunderstorm, snow, wind and rain at the route's highest point, and night cold at each night spot. Returns per-day risk low/medium/high with triggers and recommendations. If any day is high, change dates or route and validate again. Call it only after validate_hike_plan returned valid=true, with the same start_date. Not a general weather lookup. Data: Open-Meteo forecast (16 days ahead); in replay mode, recorded genuine responses, so only recorded dates work.
 
 **Input schema**
 
@@ -515,11 +528,12 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 |---|---|---|
 | `route_id` | string | The assessed route |
 | `start_date` | string | First hiking day, YYYY-MM-DD |
-| `mode` | string | live = fresh Open-Meteo call; replay = recorded genuine response from fixtures/ |
-| `forecast_point` | object | {lat, lon, elevation_m}: the route's highest point, where the forecast is taken |
+| `mode` | enum: `live` / `replay` | live = fresh Open-Meteo call; replay = recorded genuine response from fixtures/ |
+| `forecast_point` | object `GeoPoint` | The route's highest point, where the forecast is taken |
 | `fetched_at` | string | When the forecast was downloaded (UTC) |
 | `days` | array of object `DayWeather` | One entry per hiking day |
 | `overall_risk` | enum: `low` / `medium` / `high` | Highest daily risk; high means re-plan |
+| `coldest_night_c` | number \| null | Lowest night_spot_min_c; pass to calculate_supplies as night_min_c |
 | `rules_status` | string | DRAFT or approved status of the thresholds |
 | `source` | string | Data source and licence |
 
@@ -545,13 +559,24 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 
 </details>
 
+<details><summary><code>GeoPoint</code></summary>
+
+| Field | Type | Meaning |
+|---|---|---|
+| `lat` | number | Latitude, WGS84 |
+| `lon` | number | Longitude, WGS84 |
+| `elevation_m` | integer | Height above sea level, m |
+
+</details>
+
 <details><summary><code>Trigger</code></summary>
 
 | Field | Type | Meaning |
 |---|---|---|
-| `code` | string | THUNDERSTORM \| SNOW \| WIND \| RAIN \| NIGHT_COLD |
-| `value` | number | Forecast value (weather code, m/s, mm or °C) |
-| `threshold` | number | Threshold from rules.yaml `weather` |
+| `code` | enum: `THUNDERSTORM` / `SNOW` / `WIND` / `RAIN` / `NIGHT_COLD` | Which threshold was crossed |
+| `value` | number | Forecast value, in `unit` |
+| `threshold` | number | Threshold from rules.yaml `weather`, in `unit` |
+| `unit` | enum: `wmo_code` / `m/s` / `mm` / `°C` | wmo_code for THUNDERSTORM/SNOW, m/s for WIND, mm for RAIN, °C for NIGHT_COLD |
 | `risk` | enum: `low` / `medium` / `high` | Risk this trigger causes |
 | `recommendation` | string | What to change in the plan (Ukrainian) |
 | `source` | string | Source of the threshold |
@@ -614,6 +639,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
           "code": "SNOW",
           "value": 71.0,
           "threshold": 71.0,
+          "unit": "wmo_code",
           "risk": "medium",
           "recommendation": "Сніг на маршруті: зимове спорядження й досвід зимових походів; вище межі лісу — не виходити без зимової підготовки.",
           "source": "PROPOSAL: WMO snow codes; snow on the route needs winter gear and experience [S18]; high risk above the tree line"
@@ -622,6 +648,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
           "code": "NIGHT_COLD",
           "value": -6.3,
           "threshold": 0.0,
+          "unit": "°C",
           "risk": "medium",
           "recommendation": "Зимові спальники й каремати, досвід холодних ночівель; або нижча ночівля.",
           "source": "PROPOSAL: research §4; at or below 0 °C winter sleeping gear is required [S18]"
@@ -648,6 +675,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
           "code": "NIGHT_COLD",
           "value": -10.4,
           "threshold": 0.0,
+          "unit": "°C",
           "risk": "medium",
           "recommendation": "Зимові спальники й каремати, досвід холодних ночівель; або нижча ночівля.",
           "source": "PROPOSAL: research §4; at or below 0 °C winter sleeping gear is required [S18]"
@@ -657,6 +685,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
     "... 1 more"
   ],
   "overall_risk": "medium",
+  "coldest_night_c": -10.4,
   "rules_status": "DRAFT, not approved by a Plast leader (version 2026-11-14-draft)",
   "source": "Open-Meteo forecast API (CC BY 4.0), daily values at the route's highest point"
 }
@@ -668,13 +697,13 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 |---|---|
 | Name | `calculate_supplies` (title: Calculate supplies and pack weight) |
 | Purpose | Last planning step: what the group must carry. Takes the per-day loads from validate_hike_plan and the coldest night from assess_weather_risk and returns food, water, gas, tents, stoves, pots, first-aid kits and the pack weight against the section's limit. Every coefficient is echoed in `assumptions` with its source, so any number can be traced. |
-| Processing | Food = days × people × kg/day by section (0.9; новацтво 0.72); water = max(3 l, 1 l camp + 0.5 l per walking hour); +1.5 l per person per dry night; gas 25 g/person/day ×1.5 with frost; 1 stove + 3 pots per 6; 1 first-aid kit per 10; tents by capacity. Pack = food + 1 l water (+ measured base gear); limit = min(9 kg, % of the lightest body weight). No invented base-gear default. |
+| Processing | Food = number of days × people × kg/day by section (0.9; новацтво 0.72); water = max(3 l, 1 l camp + 0.5 l per walking hour); +1.5 l per person per dry night; gas 25 g/person/day ×1.5 with frost; 1 stove + 3 pots per 6; 1 first-aid kit per 10; tents by capacity. Pack = food + 1 l water (+ measured base gear); limit = min(9 kg, % of the lightest body weight). No invented base-gear default. |
 | Side effects | None. |
 | Annotations | readOnly=True, idempotent=True, openWorld=False |
 
 **Model-facing description (exact):**
 
-> Compute food, water, cooking gas, tents, stoves, pots, first-aid kits and pack weights for a validated plan. Pass days[] (km, ascent_m, walking_hours) exactly as returned by validate_hike_plan, dry_nights = number of OVERNIGHT_NO_WATER warnings, night_min_c = lowest night_spot_min_c from assess_weather_risk. Every coefficient used is listed in `assumptions` with its source.
+> Compute food, water, cooking gas, tents, stoves, pots, first-aid kits and pack weights for a validated plan. Call it last. Pass day_loads = one object per day copied from validate_hike_plan days[] (km, ascent_m, walking_hours), dry_nights = validate_hike_plan dry_nights, night_min_c = assess_weather_risk coldest_night_c. Every coefficient used is listed in `assumptions` with its source.
 
 **Input schema**
 
@@ -683,15 +712,15 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 | `section` | enum: `novatstvo` / `yunatstvo` / `senior` | yes | — | — | Plast age section of the participants |
 | `participants` | integer | yes | ≥ `1`, ≤ `60` | — | Participants of the section (same as in validate_hike_plan) |
 | `adults` | integer | yes | ≥ `0`, ≤ `30` | — | Adult leaders |
-| `days` | array of object `DayLoad` | yes | min items `1`, max items `7` | — | Per-day loads from validate_hike_plan |
-| `dry_nights` | integer | no | ≥ `0`, ≤ `6` | `0` | Nights without water nearby |
-| `night_min_c` | number \| null | no | ≥ `-40`, ≤ `30` | `null` | Coldest night at the night spots, °C |
+| `day_loads` | array of object `DayLoad` | yes | min items `1`, max items `7` | — | Array with one object per hiking day (NOT a number): km, ascent_m, walking_hours copied from validate_hike_plan days[] |
+| `dry_nights` | integer | no | ≥ `0`, ≤ `6` | `0` | validate_hike_plan dry_nights: night spots without water nearby |
+| `night_min_c` | number \| null | no | ≥ `-40`, ≤ `30` | `null` | assess_weather_risk coldest_night_c, °C; omit if the weather was not assessed |
 | `tent_capacity` | enum: `2` / `3` / `4` | no | — | `3` | People per tent |
 | `lightest_body_weight_kg` | number \| null | no | ≥ `15`, ≤ `150` | `null` | Body weight of the lightest participant, for the % body-weight pack rule |
 | `participant_base_gear_kg` | number \| null | no | ≥ `1`, ≤ `25` | `null` | Measured weight of a participant's packed rucksack without food and water |
 | `adult_base_gear_kg` | number \| null | no | ≥ `1`, ≤ `30` | `null` | Same for an adult leader |
 
-`DayLoad`: One day of a validated plan, as returned by validate_hike_plan (days[].km / ascent_m / walking_hours).
+`DayLoad`: One day of a validated plan: copy km, ascent_m and walking_hours from a validate_hike_plan days[] entry.
 
 | Field | Type | Required | Constraints | Default |
 |---|---|---|---|---|
@@ -704,7 +733,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 | Field | Type | Meaning |
 |---|---|---|
 | `people` | integer | Participants + adults |
-| `days` | integer | Number of hiking days |
+| `num_days` | integer | Number of hiking days |
 | `kcal_per_person_day` | integer | Energy target for a participant of this section |
 | `food_kg_per_person` | number | Food per participant for the whole hike, kg |
 | `food_kg_group` | number | Food for the whole group, kg |
@@ -750,7 +779,8 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 
 | Condition | Representation |
 |---|---|
-| Schema violations (empty `days`, >7 days, km > 40, tent_capacity not 2/3/4) | `isError: true`, pydantic message |
+| Schema violations (empty `day_loads`, >7 days, km > 40, tent_capacity not 2/3/4) | `isError: true`, pydantic message |
+| `dry_nights` larger than the number of nights | code `INVALID_INPUT` |
 | A coefficient missing in rules.yaml | code `DATA_UNAVAILABLE`, names the missing key |
 
 **Example input**
@@ -760,7 +790,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
   "section": "yunatstvo",
   "participants": 10,
   "adults": 2,
-  "days": [
+  "day_loads": [
     {
       "km": 11.3,
       "ascent_m": 201,
@@ -790,7 +820,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 ```json
 {
   "people": 12,
-  "days": 3,
+  "num_days": 3,
   "kcal_per_person_day": 2700,
   "food_kg_per_person": 2.7,
   "food_kg_group": 32.4,

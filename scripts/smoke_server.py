@@ -71,7 +71,7 @@ async def main() -> None:
 
             sup = show("calculate_supplies", await s.call_tool("calculate_supplies", {
                 "section": "yunatstvo", "participants": 10, "adults": 2,
-                "days": [{"km": d["km"], "ascent_m": d["ascent_m"], "walking_hours": d["walking_hours"]} for d in v["days"]],
+                "day_loads": [{"km": d["km"], "ascent_m": d["ascent_m"], "walking_hours": d["walking_hours"]} for d in v["days"]],
                 "night_min_c": -0.7}))
             if sup:
                 print(json.dumps({k: sup[k] for k in ("food_kg_group", "gas_g_group", "tents", "stoves")}, ensure_ascii=False))

@@ -167,7 +167,7 @@ def _days():
 
 def test_supplies_numbers_trace_to_coefficients():
     s = calculate_supplies("yunatstvo", 10, 2, _days(), 0, None, 3, None, None, None)
-    assert s.people == 12 and s.days == 3
+    assert s.people == 12 and s.num_days == 3
     assert s.food_kg_group == pytest.approx(3 * 12 * 0.9)          # 0.9 kg/person/day
     assert s.gas_g_group == 12 * 3 * 25                            # 25 g/person/day, no frost
     assert s.stoves == 2 and s.pots == 6 and s.tents == 4 and s.first_aid_kits == 2

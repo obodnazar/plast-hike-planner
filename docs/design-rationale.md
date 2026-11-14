@@ -17,7 +17,7 @@ flowchart LR
   end
   subgraph OBS["Obsidian app"]
     OM["Obsidian MCP server<br/>(Local REST API plugin)<br/>https://127.0.0.1:27124/mcp/"]
-    V[("demo-vault<br/>Запити / Правила / Плани")]
+    V[("demo-vault<br/>Запити / Плани")]
     OM --- V
   end
   subgraph PT["plast-trail (separate Python process)"]
@@ -25,7 +25,7 @@ flowchart LR
     D[("routes.json · rules.yaml<br/>fixtures/open-meteo")]
     S --- D
   end
-  OME["Open-Meteo API<br/>(live/record mode only)"]
+  OME["Open-Meteo API<br/>(live mode; record script)"]
   MC -- "streamable HTTP + TLS + bearer" --> OM
   MC -- "streamable HTTP" --> S
   S -. "HTTPS GET" .-> OME
@@ -56,7 +56,7 @@ Common reasons: (1) the numbers must be **deterministic and testable**, not prod
 |---|---|
 | `find_routes` | The only retrieval tool. It is a constrained domain query (section, days, region, features), not a free-text search: it applies section rules (allowed night-spot kinds, daily limits) and returns ids that the other tools accept. Keeps 450 KB of route data out of the model's context. |
 | `validate_hike_plan` | The core of the feedback loop. Computing distances, climbs, walking time and sunset from an elevation profile is exactly what a model gets wrong; the tool does it exactly and returns **actionable** violations (codes, limits, a better waypoint id). Rules live in data, not in the prompt. |
-| `assess_weather_risk` | Wraps a network API behind domain thresholds: it converts a raw forecast into "high risk on day 2 because of snow above the tree line". It owns caching, throttling, timeouts and the live/record/replay switch, so the agent never talks to Open-Meteo directly. |
+| `assess_weather_risk` | Wraps a network API behind domain thresholds: it converts a raw forecast into "high risk on day 2 because of snow above the tree line". It owns caching, throttling, timeouts and the live/replay switch (recording is a separate script, so the tool never writes), so the agent never talks to Open-Meteo directly. |
 | `calculate_supplies` | Turns a validated plan into what the group carries, with every coefficient echoed with its source. Separate from validation because it has different inputs (body weight, weighed rucksacks, coldest night) and answers a different question. |
 
 At least three tools go beyond retrieval: validate (rules + computation), weather (API + rules), supplies (computation). Their responsibilities do not overlap: candidates → feasibility → conditions → logistics.

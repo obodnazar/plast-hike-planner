@@ -52,7 +52,7 @@ The model only chooses; every number comes from a tool. Details: [docs/design-ra
 |---|---|
 | `find_routes` | Routes that fit the section, days, region and wishes; ranked; with the night spots allowed for the section (the one retrieval tool) |
 | `validate_hike_plan` | Splits the route into days at the chosen night spots and computes km, ascent, walking time and arrival vs sunset. Checks Plast rules and the group's limits; every violation has a concrete fix |
-| `assess_weather_risk` | Open-Meteo forecast at the route's highest point turned into per-day risk (thunderstorm, snow, wind, rain, night cold) with recommendations; live / record / replay |
+| `assess_weather_risk` | Open-Meteo forecast at the route's highest point turned into per-day risk (thunderstorm, snow, wind, rain, night cold) with recommendations; live / replay (fixtures are recorded by a separate script) |
 | `calculate_supplies` | Food, water, gas, tents, stoves, pots, first-aid kits, pack weight vs the section's limit; every coefficient with its source |
 
 Full contracts (exact descriptions, input/output schemas, errors, side effects, real examples): **[docs/tool-contracts.md](docs/tool-contracts.md)**.
@@ -95,7 +95,7 @@ cp .env.example .env         # then fill in OPENROUTER_API_KEY and OBSIDIAN_API_
 | `OBSIDIAN_MCP_URL` | `https://127.0.0.1:27124/mcp/` | the plugin's MCP endpoint |
 | `OBSIDIAN_CA_CERT` | `certs/obsidian-local-rest-api.crt` | used to verify TLS (not disabled) |
 | `PLAST_TRAIL_HOST` / `PLAST_TRAIL_PORT` | `127.0.0.1` / `8770` | where the custom server listens |
-| `WEATHER_MODE` | `replay` | `replay` (recorded forecasts, no network), `live`, `record` |
+| `WEATHER_MODE` | `replay` | `replay` (recorded forecasts, no network) or `live`; fixtures are recorded with `scripts/record_weather.py` |
 
 ## Run: two independent processes
 ```bash
@@ -119,7 +119,7 @@ Details and rate limits: [docs/data-and-replay.md](docs/data-and-replay.md).
 
 ## Checks
 ```bash
-uv run pytest -q                          # 25 tests: domain logic + the agent workflow over in-memory MCP (no network)
+uv run pytest -q                          # 29 tests: domain logic, schemas over in-memory MCP, the agent workflow (no network)
 uv run python scripts/smoke_server.py     # all 4 tools over real MCP, incl. error cases and an empty result
 uv run check-obsidian                     # Obsidian discovery + one vault_read
 uv run python scripts/reset_demo.py       # clean the demo vault before a rehearsal
@@ -144,5 +144,5 @@ fixtures/          recorded Open-Meteo responses (replay)
 scripts/           build_dataset, record_weather, smoke_server, smoke_model, gen_docs, reset_demo
 tests/             pytest
 docs/              contracts, rationale, data/replay, demo script
-demo-vault/        Obsidian demo vault: Запити/ (requests), Правила/, Плани/ (agent output)
+demo-vault/        Obsidian demo vault: Запити/ (requests), Плани/ (agent output)
 ```
