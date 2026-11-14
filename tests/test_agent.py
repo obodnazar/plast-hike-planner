@@ -39,13 +39,18 @@ class FakeObsidian:
         self.written: dict[str, str] = {}
 
     async def call_tool(self, tool: str, args: dict) -> CallToolResult:
-        if tool == "vault_read":
+        if tool == "vault_read" and args["path"] in self.written:  # notes saved during this run
+            body = {"content": self.written[args["path"]], "path": args["path"]}
+        elif tool == "vault_read":
             if args["path"] != REQUEST:
                 return CallToolResult(content=[TextContent(type="text", text=f"File not found: {args['path']}")],
                                       isError=True)
             body = {"content": NOTE, "path": REQUEST}
         elif tool == "vault_list":
             body = {"files": [Path(REQUEST).name]}
+        elif tool == "vault_append":  # like the plugin: add to the end, create if missing
+            self.written[args["path"]] = self.written.get(args["path"], "") + args["content"]
+            body = {"version": "2"}
         else:
             self.written[args["path"]] = args["content"]
             body = {"version": "1"}
@@ -61,7 +66,7 @@ class FakeLLM:
         self.script = [parsed, *proposals]
         self.calls = 0
 
-    def structured(self, schema, system: str, user: str):
+    async def structured(self, schema, system: str, user: str):
         self.calls += 1
         item = self.script.pop(0)
         if isinstance(item, Exception):
@@ -69,7 +74,7 @@ class FakeLLM:
         assert schema in (ParsedRequest, Proposal)
         return schema(**item)
 
-    def text(self, system: str, user: str) -> str:
+    async def text(self, system: str, user: str) -> str:
         self.calls += 1
         return "Висновок."
 
@@ -222,3 +227,59 @@ def test_note_shows_what_the_agent_understood_and_cleans_model_text():
     assert "## Що агент зрозумів із запиту" in note and "юнацтво, учасників 10, дорослих 2" in note
     assert "можна зсунути до 3 дн." in note                          # 10 days clamped to 3, and said so
     assert "![" not in note.split("## Як агент")[1] and "[[Плани/x]]" not in note
+
+
+
+# ------------------------------------------------------------------ chat mode
+def run_chat(llm: FakeLLM, replies: list[str]):
+    obsidian = FakeObsidian()
+    answers = iter(replies)
+    asked: list[str] = []
+
+    async def ask(prompt: str) -> str:
+        asked.append(prompt)
+        return next(answers)
+
+    async def go():
+        async with create_connected_server_and_client_session(plast_trail_server) as session:
+            links = McpLinks(SimpleNamespace(obsidian_mcp_url="x", plast_trail_url="y"))
+            links.sessions = {"plast-trail": session, "obsidian": obsidian}
+            return await cli.plan_and_write(links, None, None, dry_run=False, llm=llm, chat_mode=True, ask=ask)
+
+    return asyncio.run(go()), obsidian, asked
+
+
+def test_chat_asks_for_what_is_missing_then_saves_and_plans():
+    no_adults = {**PARSED, "adults": None}
+    llm = FakeLLM(no_adults, [PARSED, GOOD])   # 1st reading misses adults; after the answer it is complete
+    code, obsidian, asked = run_chat(llm, [
+        "Юнацтво, 10 людей, Чорногора, хочемо озеро, 3 дні з 21 листопада", "",   # description + end
+        "2",                                                                       # answer: adults
+        "",                                                                        # confirm: yes
+        "Похід Сокіл з чату",                                                      # note title
+    ])
+    assert code == 0
+    assert any("дорослих" in q for q in asked)                    # the agent asked about the adults
+    request = obsidian.written["Запити/Похід Сокіл з чату.md"]
+    assert "Уточнення" in request and "дорослих: 2" in request.lower()
+    assert "Плани/Похід Сокіл з чату — план.md" in obsidian.written    # planned and written back
+    assert llm.calls == 4                                          # 2 readings + 1 proposal + conclusion
+
+
+def test_chat_can_be_cancelled_without_writing_anything():
+    code, obsidian, _ = run_chat(FakeLLM(PARSED, []), ["Юнацтво, 10 + 2, Чорногора, 3 дні з 21.11", "", "ні"])
+    assert code == 0 and obsidian.written == {}
+
+
+def test_model_deadline_gives_a_readable_error():
+    from plast_agent import llm as L
+    model = L.LLM.__new__(L.LLM)
+    model.model_name = "slow-model"
+
+    class Slow:
+        async def ainvoke(self, messages):
+            await asyncio.sleep(5)
+
+    with pytest.raises(L.LLMError) as e:
+        asyncio.run(model._deadline(Slow(), [], 0.1))
+    assert "не відповіла за" in str(e.value)

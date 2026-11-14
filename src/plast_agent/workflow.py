@@ -198,6 +198,37 @@ def check_proposal(prop: dict[str, Any], state: State) -> tuple[list[str], dict[
     return problems, norm
 
 
+def fallback_conclusion(state: State) -> str:
+    """A plain summary from the tool results, used when the model does not answer in time."""
+    v, w, st = state.get("validation") or {}, state.get("weather") or {}, state.get("status")
+    if st == "failed" or not v.get("valid"):
+        return ("Валідного плану скласти не вдалося: дивіться порушення останньої спроби нижче "
+                "і змініть запит (дні, ліміти або район).")
+    days = " / ".join(f"{d['km']:g}" for d in v.get("days", []))
+    warnings = sum(1 for x in v.get("violations", []) if x["severity"] == "warning") + \
+        len((state.get("supplies") or {}).get("warnings", []))
+    risk = {"low": "низький", "medium": "середній", "high": "високий", "unknown": "невідомий"}.get(
+        w.get("overall_risk"), w.get("overall_risk"))
+    text = (f"Маршрут «{v['route_name']}», старт {state['proposal']['start_date']}, дні по {days} км. "
+            f"Погодний ризик: {risk}. Попереджень: {warnings} — перегляньте їх нижче. ")
+    if st == "risky":
+        text += "План не рекомендований без змін через погоду. "
+    if "DRAFT" in (v.get("rules_status") or ""):
+        text += "Норми Пласту в системі ще чернетка: їх має затвердити провідник."
+    return text.strip()
+
+
+async def understand(llm: LLM, text: str) -> tuple[dict[str, Any], list[str], list[str]]:
+    """LLM reads the free text -> (parsed request, notes about changed values, missing core facts in Ukrainian)."""
+    today = date.today()
+    system = PARSE_SYSTEM.format(today=today.isoformat(), weekday=UA_WEEKDAYS[today.weekday()],
+                                 calendar=calendar_text(today))
+    req: ParsedRequest = await llm.structured(ParsedRequest, system, f"<note>\n{text}\n</note>")
+    d, notes = sanitise_request(req.model_dump(mode="json"))
+    missing = [k for k in MISSING_UA if d.get(k) is None]
+    return d, notes, missing
+
+
 # ------------------------------------------------------------------ graph
 def build_graph(links: McpLinks, llm: LLM):
     async def read_request(state: State) -> State:
@@ -211,21 +242,20 @@ def build_graph(links: McpLinks, llm: LLM):
                             f"Наявні запити: {', '.join('Запити/' + f for f in files) or 'немає'}") from exc
         text = note["content"] if isinstance(note, dict) else str(note)
         print(f"    прочитано {len(text)} символів")
-        return {"request_text": text, "attempts": [], "search_notes": []}
+        return {"request_text": text, "attempts": [], "search_notes": state.get("search_notes", [])}
 
     async def parse_request(state: State) -> State:
+        if state.get("request"):  # already understood and confirmed in the chat dialogue
+            step("2. Запит уже розібрано й підтверджено в діалозі")
+            return {}
         step("2. Розбираю запит (LLM → структуровані поля)")
-        today = date.today()
-        system = PARSE_SYSTEM.format(today=today.isoformat(), weekday=UA_WEEKDAYS[today.weekday()],
-                                     calendar=calendar_text(today))
-        req: ParsedRequest = llm.structured(ParsedRequest, system, f"<note>\n{state['request_text']}\n</note>")
-        d, notes = sanitise_request(req.model_dump(mode="json"))
-        missing = [MISSING_UA[k] for k in MISSING_UA if d.get(k) is None]
-        if missing:  # better to ask than to guess the group or the dates
-            raise AgentStop("У запиті бракує: " + ", ".join(missing) + ". Допишіть це в нотатку й запустіть знову.")
+        d, notes, missing = await understand(llm, state["request_text"])
         print("    " + json.dumps({k: v for k, v in d.items() if v not in (None, [])}, ensure_ascii=False))
         for x in notes:
             print(f"    {YELLOW}{x}{RESET}")
+        if missing:  # better to ask than to guess the group or the dates
+            raise AgentStop("У запиті бракує: " + ", ".join(MISSING_UA[k] for k in missing)
+                            + ". Допишіть це в нотатку (або скористайтеся --chat) й запустіть знову.")
         return {"request": d, "search_notes": notes}
 
     async def search_routes(state: State) -> State:
@@ -264,7 +294,7 @@ def build_graph(links: McpLinks, llm: LLM):
         user = (f"Group: {r['section']}, {r['participants']} participants + {r['adults']} adults, "
                 f"{r['days']} days.\n\nCandidates:\n"
                 f"{candidates_text(state['search'])}\n\nFeedback:\n{feedback_text(state['attempts'])}")
-        p: Proposal = llm.structured(Proposal, system, user)
+        p: Proposal = await llm.structured(Proposal, system, user)
         problems, prop = check_proposal(p.model_dump(), state)
         print(f"    маршрут {prop['route_id']}, ночівлі {prop['overnight_waypoint_ids']}, старт "
               f"{prop['start_date']} {prop['start_time']}\n    «{prop['reasoning']}»")
@@ -439,14 +469,15 @@ def build_graph(links: McpLinks, llm: LLM):
             "last_errors": [f for a in state["attempts"][-1:] for f in a["feedback"]][:4] if not is_plan else [],
         }
         try:
-            text = llm.text("Ти помічник пластового провідника. Напиши висновок українською, 3-5 речень, "
+            text = await llm.text("Ти помічник пластового провідника. Напиши висновок українською, 3-5 речень, "
                             "лише з наданих фактів, без нових чисел. Якщо правила DRAFT — скажи, що їх треба "
                             "затвердити. Статус attention — план валідний, але назви головні попередження й що з ними "
                             "робити. Якщо статус risky або failed — чітко скажи, що план не рекомендований без змін і чому. "
                             "history — це відхилені спроби, не описуй їх як чинний план. Не згадуй чисел, дат, назв чи "
                             "погодних явищ, яких немає в JSON.", json.dumps(facts, ensure_ascii=False))
-        except Exception as exc:  # the plan note must still be written
-            text = f"(Висновок моделі недоступний: {type(exc).__name__}. Дивіться таблиці нижче.)"
+        except Exception as exc:  # the plan note must still be written: a factual summary instead
+            print(f"    {YELLOW}модель не відповіла вчасно ({type(exc).__name__}); пишу висновок із фактів{RESET}")
+            text = fallback_conclusion(state)
         print(f"    {text[:300]}")
         return {"conclusion": text.strip()}
 

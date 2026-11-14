@@ -107,7 +107,11 @@ WEATHER_MODE=live uv run plast-trail      # fresh forecasts from Open-Meteo
 uv run plast-agent --list                                     # request notes in the vault
 uv run plast-agent "Запити/Мандрівка гуртка Сокіл.md"         # writes Плани/... in Obsidian
 uv run plast-agent "Запити/Мандрівка гуртка Сокіл.md" --dry-run
+uv run plast-agent --chat
 ```
+`--chat` lets the leader describe the hike in their own words in the terminal. The agent shows what it understood, asks only about what is missing (group, number of people and adults, days, start date, and optionally the region), lets the leader correct it, saves the request as a note in `Запити/` (`vault_write`) and then plans as for any note.
+
+Model calls have hard deadlines (120 s for parsing and proposals, 45 s for the closing paragraph). OpenRouter keeps slow free-model connections alive, so an HTTP read timeout alone may never fire. If the closing paragraph times out, the agent writes a factual summary instead.
 The server can also be inspected with any MCP client, e.g. `npx @modelcontextprotocol/inspector` → Streamable HTTP → `http://127.0.0.1:8770/mcp`.
 
 ## Offline / replay mode

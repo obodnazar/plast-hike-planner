@@ -9,6 +9,8 @@ Every call is counted, because free models allow 50 requests a day.
 
 from __future__ import annotations
 
+import asyncio
+
 from datetime import date
 from typing import Any, Literal
 
@@ -97,6 +99,10 @@ def explain_llm(exc: BaseException, model: str) -> str:
     return f"Модель не дала коректної відповіді: {type(exc).__name__}: {str(exc)[:200]}"
 
 
+STRUCTURED_DEADLINE_S = 120   # parsing a note / proposing a plan
+TEXT_DEADLINE_S = 45          # the optional closing paragraph
+
+
 class LLM:
     def __init__(self, settings: Settings) -> None:
         self.model_name = settings.openrouter_model
@@ -105,13 +111,28 @@ class LLM:
             api_key=settings.openrouter_api_key,
             base_url=settings.openrouter_base_url,
             temperature=0,
-            timeout=90,
-            max_retries=2,
+            timeout=75,
+            max_retries=1,
+            default_headers={"X-Title": "plast-hike-planner"},
+        )
+        # The closing paragraph is optional: it gets a short leash, the plan never waits for it.
+        self.quick_chat = ChatOpenAI(
+            model=settings.openrouter_model, api_key=settings.openrouter_api_key,
+            base_url=settings.openrouter_base_url, temperature=0, timeout=45, max_retries=0,
             default_headers={"X-Title": "plast-hike-planner"},
         )
         self.calls = 0
 
-    def structured(self, schema: type[BaseModel], system: str, user: str) -> BaseModel:
+    async def _deadline(self, runnable, messages, seconds: int):
+        """A hard wall-clock limit. OpenRouter keeps slow free-model connections alive with whitespace,
+        so the HTTP read timeout alone may never fire."""
+        try:
+            return await asyncio.wait_for(runnable.ainvoke(messages), timeout=seconds)
+        except asyncio.TimeoutError as exc:
+            raise LLMError(f"Модель {self.model_name} не відповіла за {seconds} с. Спробуйте ще раз або вкажіть "
+                           "іншу модель в OPENROUTER_MODEL.") from exc
+
+    async def structured(self, schema: type[BaseModel], system: str, user: str) -> BaseModel:
         """Ask for a typed answer; if it breaks the schema or comes back empty, retry once with the reason."""
         runner = self.chat.with_structured_output(schema, method="function_calling")
         messages = [("system", system), ("user", user)]
@@ -119,7 +140,7 @@ class LLM:
         for attempt in (1, 2):
             self.calls += 1
             try:
-                result = runner.invoke(messages)
+                result = await self._deadline(runner, messages, STRUCTURED_DEADLINE_S)
             except (ValidationError, OutputParserException) as exc:
                 last_problem = f"{type(exc).__name__}: {str(exc)[:300]}"
                 messages.append(("user", f"Your previous answer broke the schema: {last_problem}. "
@@ -134,9 +155,11 @@ class LLM:
             return result
         raise LLMError(f"Модель {self.model_name} двічі не дала відповіді за схемою ({last_problem}).")
 
-    def text(self, system: str, user: str) -> str:
+    async def text(self, system: str, user: str) -> str:
+        """Free text with a short deadline: callers must have a fallback."""
         self.calls += 1
         try:
-            return self.chat.invoke([("system", system), ("user", user)]).content
+            msg = await self._deadline(self.quick_chat, [("system", system), ("user", user)], TEXT_DEADLINE_S)
+            return msg.content
         except openai.OpenAIError as exc:
             raise LLMError(explain_llm(exc, self.model_name)) from exc
