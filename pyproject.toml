@@ -1,0 +1,30 @@
+[project]
+name = "plast-hike-planner"
+version = "0.1.0"
+description = "Agent that plans Plast hikes: Obsidian MCP for notes + custom plast-trail MCP server for routes, rules, weather and supplies"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "mcp[cli]>=1.20",
+    "langgraph>=1.0",
+    "langchain-openai>=1.0",
+    "httpx>=0.28",
+    "pydantic>=2.11",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.1",
+]
+
+[project.scripts]
+plast-trail = "plast_trail.server:main"
+plast-agent = "plast_agent.cli:main"
+check-obsidian = "plast_agent.check_obsidian:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/plast_trail", "src/plast_agent"]

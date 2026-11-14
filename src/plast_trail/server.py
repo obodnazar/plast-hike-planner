@@ -1,0 +1,219 @@
+"""plast-trail: MCP server for planning Plast hikes in the Ukrainian Carpathians.
+
+Start it on its own, in a separate terminal:
+
+    uv run plast-trail                 # streamable HTTP on 127.0.0.1:8770/mcp
+    uv run plast-trail --port 8771     # another port
+    WEATHER_MODE=live uv run plast-trail
+
+Tools (all return structured JSON with an output schema):
+    find_routes          - routes that fit the group (OSM dataset)
+    validate_hike_plan   - per-day numbers + rule check with fix suggestions
+    assess_weather_risk  - Open-Meteo forecast -> risk per day (live / record / replay)
+    calculate_supplies   - food, water, gas, tents, pack weight
+"""
+
+from __future__ import annotations
+
+import argparse
+import functools
+import logging
+import os
+import sys
+import time
+from datetime import date
+from typing import Annotated, Literal
+
+from dotenv import load_dotenv
+from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
+from pydantic import Field
+
+from plast_trail import routes, supplies, validation, weather
+from plast_trail.data import PROJECT_ROOT, dataset_meta, load_routes, rules_status
+from plast_trail.errors import DomainError
+from plast_trail.models import (
+    DayLoad,
+    Feature,
+    FindRoutesResult,
+    GroupLimits,
+    Region,
+    Section,
+    SuppliesResult,
+    ValidationResult,
+    WeatherResult,
+)
+
+log = logging.getLogger("plast-trail")
+
+INSTRUCTIONS = """\
+Tools for planning a Plast (Ukrainian scouting) hike on marked trails of the Ukrainian Carpathians.
+Typical flow:
+1. find_routes(section, days, ...) -> pick a route and night spots from its overnight_options.
+2. validate_hike_plan(route_id, overnight_waypoint_ids, ...) -> if valid=false, apply the
+   suggestions (they name better waypoint ids) and validate again.
+3. assess_weather_risk(same route and night spots, start_date) -> if a day is high risk,
+   change dates, night spots or route, then validate again.
+4. calculate_supplies(days from step 2, dry_nights, night_min_c from step 3).
+Never invent km, ascent or ids: take them from tool results. Rules are a DRAFT until a
+Plast leader approves them; always mention rules_status to the user.
+"""
+
+READ_ONLY = ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False)
+
+
+def logged(fn):
+    """Log every call on the server side (visible in the server terminal during the demo)."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        started = time.monotonic()
+        shown = {k: getattr(v, "value", v) for k, v in kwargs.items() if v not in (None, [], "")}
+        try:
+            result = fn(*args, **kwargs)
+        except DomainError as exc:
+            log.warning("%s(%s) -> ERROR %s (%.0f ms)", fn.__name__, shown, exc.code,
+                        (time.monotonic() - started) * 1000)
+            raise exc.to_tool_error() from exc
+        except Exception as exc:  # a bug must still come back as a structured error, not a stack trace
+            log.exception("%s(%s) -> INTERNAL ERROR", fn.__name__, shown)
+            raise DomainError("INTERNAL_ERROR", f"{type(exc).__name__}: {exc}",
+                              "This is a server bug; see the server log.").to_tool_error() from exc
+        log.info("%s(%s) -> ok (%.0f ms)", fn.__name__, shown, (time.monotonic() - started) * 1000)
+        return result
+    return wrapper
+
+
+mcp = FastMCP("plast-trail", instructions=INSTRUCTIONS)
+
+
+@mcp.tool(
+    title="Find routes for a Plast group",
+    description=(
+        "Find marked hiking routes in the Ukrainian Carpathians (OpenStreetMap) that suit a Plast group: "
+        "age section, number of days, optional region and wished features (lake, peak, ...). "
+        "Returns routes ranked by how well km/day fits the section's target, each with allowed overnight "
+        "spots (waypoint ids for validate_hike_plan). Use it first. An empty `routes` list means nothing "
+        "matched (see `excluded` for why); it is not an error."
+    ),
+    annotations=READ_ONLY,
+)
+@logged
+def find_routes(
+    section: Annotated[Section, Field(description="Plast age section: novatstvo (6-11), yunatstvo (11-18), senior (18+)")],
+    days: Annotated[int, Field(ge=1, le=7, description="Number of hiking days (nights = days - 1)")],
+    region: Annotated[Region | None, Field(description="Mountain area; omit to search all")] = None,
+    must_include: Annotated[list[Feature], Field(max_length=4, description="Features the route must pass, e.g. ['lake']")] = [],  # noqa: B006
+    max_results: Annotated[int, Field(ge=1, le=10, description="How many routes to return")] = 5,
+) -> FindRoutesResult:
+    return routes.find_routes(section.value, days, region.value if region else None,
+                              [f.value for f in must_include], max_results)
+
+
+@mcp.tool(
+    title="Validate a hike plan",
+    description=(
+        "Check a concrete hike plan against Plast safety rules and the group's own limits. "
+        "A plan is route_id + the waypoint ids where the group sleeps, in route order (N ids = N+1 days). "
+        "Computes per-day km, ascent, walking time and arrival vs sunset, checks night spots (allowed kind, "
+        "water, ridge), number of adults and group size. Returns valid=false with violations; each violation "
+        "has a concrete suggestion, often a better waypoint id. Re-validate after every change until valid=true."
+    ),
+    annotations=READ_ONLY,
+)
+@logged
+def validate_hike_plan(
+    route_id: Annotated[str, Field(pattern=r"^r\d+$", description="Route id from find_routes, e.g. 'r8613349'")],
+    section: Annotated[Section, Field(description="Plast age section of the participants")],
+    participants: Annotated[int, Field(ge=1, le=60, description="Participants of the section (children/youth; for senior: members)")],
+    adults: Annotated[int, Field(ge=0, le=30, description="Adult leaders accompanying the group")],
+    overnight_waypoint_ids: Annotated[list[Annotated[str, Field(pattern=r"^w\d+$")]], Field(
+        max_length=6, description="Night spots in route order, e.g. ['w30', 'w56']; [] for a one-day hike")] = [],  # noqa: B006
+    start_date: Annotated[date | None, Field(description="First day, YYYY-MM-DD; enables the sunset check")] = None,
+    start_time: Annotated[str | None, Field(pattern=r"^\d{2}:\d{2}$", description="Daily start time HH:MM, default from rules (08:00)")] = None,
+    group_limits: Annotated[GroupLimits | None, Field(description="Stricter limits from the leader's request note")] = None,
+) -> ValidationResult:
+    return validation.validate_hike_plan(route_id, section.value, participants, adults, overnight_waypoint_ids,
+                                         start_date, start_time, group_limits)
+
+
+@mcp.tool(
+    title="Assess weather risk for a plan",
+    description=(
+        "Weather risk for each day of a plan (same route_id and overnight_waypoint_ids as validate_hike_plan) "
+        "starting on start_date: thunderstorm, snow, wind and rain at the route's highest point, and night cold "
+        "at each night spot. Returns per-day risk low/medium/high with triggers and recommendations. "
+        "If any day is high, change dates, night spots or route and validate again. "
+        "Data: Open-Meteo forecast (16 days); in replay mode, recorded genuine responses."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
+)
+@logged
+def assess_weather_risk(
+    route_id: Annotated[str, Field(pattern=r"^r\d+$", description="Route id from find_routes")],
+    start_date: Annotated[date, Field(description="First hiking day, YYYY-MM-DD, inside the 16-day forecast window")],
+    overnight_waypoint_ids: Annotated[list[Annotated[str, Field(pattern=r"^w\d+$")]], Field(
+        max_length=6, description="Same night spots as in validate_hike_plan")] = [],  # noqa: B006
+) -> WeatherResult:
+    return weather.assess_weather_risk(route_id, start_date, overnight_waypoint_ids)
+
+
+@mcp.tool(
+    title="Calculate supplies and pack weight",
+    description=(
+        "Compute food, water, cooking gas, tents, stoves, pots, first-aid kits and pack weights for a "
+        "validated plan. Pass days[] (km, ascent_m, walking_hours) exactly as returned by validate_hike_plan, "
+        "dry_nights = number of OVERNIGHT_NO_WATER warnings, night_min_c = lowest night_spot_min_c from "
+        "assess_weather_risk. Every coefficient used is listed in `assumptions` with its source."
+    ),
+    annotations=READ_ONLY,
+)
+@logged
+def calculate_supplies(
+    section: Annotated[Section, Field(description="Plast age section of the participants")],
+    participants: Annotated[int, Field(ge=1, le=60, description="Participants of the section (same as in validate_hike_plan)")],
+    adults: Annotated[int, Field(ge=0, le=30, description="Adult leaders")],
+    days: Annotated[list[DayLoad], Field(min_length=1, max_length=7, description="Per-day loads from validate_hike_plan")],
+    dry_nights: Annotated[int, Field(ge=0, le=6, description="Nights without water nearby")] = 0,
+    night_min_c: Annotated[float | None, Field(ge=-40, le=30, description="Coldest night at the night spots, °C")] = None,
+    tent_capacity: Annotated[Literal[2, 3, 4], Field(description="People per tent")] = 3,
+    lightest_body_weight_kg: Annotated[float | None, Field(ge=15, le=150, description="Body weight of the lightest participant, for the % body-weight pack rule")] = None,
+    participant_base_gear_kg: Annotated[float | None, Field(ge=1, le=25, description="Measured weight of a participant's packed rucksack without food and water")] = None,
+    adult_base_gear_kg: Annotated[float | None, Field(ge=1, le=30, description="Same for an adult leader")] = None,
+) -> SuppliesResult:
+    return supplies.calculate_supplies(section.value, participants, adults, days, dry_nights, night_min_c,
+                                       tent_capacity, lightest_body_weight_kg, participant_base_gear_kg,
+                                       adult_base_gear_kg)
+
+
+def main() -> None:
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
+    parser = argparse.ArgumentParser(description="plast-trail MCP server")
+    parser.add_argument("--host", default=os.environ.get("PLAST_TRAIL_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PLAST_TRAIL_PORT", "8770")))
+    parser.add_argument("--stdio", action="store_true", help="serve over stdio instead of HTTP")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+                        datefmt="%H:%M:%S", stream=sys.stderr, force=True)
+    try:
+        n_routes = len(load_routes())
+        meta = dataset_meta()
+        status = rules_status()
+        wmode = weather.mode()
+    except DomainError as exc:
+        sys.exit(f"Cannot start: {exc.code}: {exc.message}. {exc.hint}")
+    log.info("plast-trail: %d routes (OSM snapshot %s), rules: %s, weather mode: %s",
+             n_routes, meta.get("osm_snapshot"), status, wmode)
+
+    if args.stdio:
+        mcp.run(transport="stdio")
+        return
+    mcp.settings.host = args.host
+    mcp.settings.port = args.port
+    log.info("serving MCP over streamable HTTP at http://%s:%d%s", args.host, args.port,
+             mcp.settings.streamable_http_path)
+    mcp.run(transport="streamable-http")
+
+
+if __name__ == "__main__":
+    main()

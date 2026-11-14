@@ -1,0 +1,148 @@
+# plast-hike-planner
+
+**Lab 1 · MCP Integration · KSE Agentic AI School 2026**
+
+An agent that plans hikes for Plast (Ukrainian scouting) groups in the Ukrainian Carpathians.
+
+1. A leader writes a request in Obsidian in plain words (group, dates, region, wishes, the group's own limits).
+2. The agent reads it, finds a marked trail, splits it into days and checks the plan against safety rules and the forecast. It re-plans when a check fails.
+3. It writes a finished plan back into Obsidian: days, weather, supplies, a paperwork checklist, and a log of how it decided.
+
+| | |
+|---|---|
+| **Existing MCP server** | Obsidian, via the plugin *Local REST API with MCP* (approved project `coddingtonbear/obsidian-local-rest-api`) |
+| **Custom MCP server** | `plast-trail`, a separate process with 4 tools over OpenStreetMap routes, Plast rules and Open-Meteo forecasts |
+| **Agent** | LangGraph workflow + official `mcp` Python SDK client; model via OpenRouter (default `nvidia/nemotron-3.5-super-vl:free`) |
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph Agent["plast-agent (process 1)"]
+    WF["LangGraph workflow"] --- LLM["LLM (OpenRouter)"]
+    WF --- MC["MCP client"]
+  end
+  subgraph OBS["Obsidian app"]
+    OM["Obsidian MCP<br/>127.0.0.1:27124/mcp/"] --- V[("demo-vault")]
+  end
+  subgraph PT["plast-trail (process 2)"]
+    S["FastMCP server<br/>127.0.0.1:8770/mcp"] --- D[("routes.json · rules.yaml · fixtures")]
+  end
+  MC -- "streamable HTTP, TLS, bearer key" --> OM
+  MC -- "streamable HTTP" --> S
+  S -. "live mode only" .-> OME["Open-Meteo"]
+```
+
+Workflow:
+1. `vault_read` the request (Obsidian).
+2. LLM parses it.
+3. `find_routes`.
+4. LLM proposes a route, night spots and a date.
+5. `validate_hike_plan`. If the plan is invalid, the violations with suggested waypoint ids go back to step 4.
+6. `assess_weather_risk`. If the risk is high, the code probes the other allowed dates and goes back to step 4.
+7. `calculate_supplies`.
+8. LLM writes a conclusion.
+9. `vault_write` the plan and `vault_append` a link into the request (Obsidian).
+
+The model only chooses; every number comes from a tool. Details: [docs/design-rationale.md](docs/design-rationale.md).
+
+## Custom tools (`plast-trail`)
+
+| Tool | What it does |
+|---|---|
+| `find_routes` | Routes that fit the section, days, region and wishes; ranked; with the night spots allowed for the section (the one retrieval tool) |
+| `validate_hike_plan` | Splits the route into days at the chosen night spots and computes km, ascent, walking time and arrival vs sunset. Checks Plast rules and the group's limits; every violation has a concrete fix |
+| `assess_weather_risk` | Open-Meteo forecast at the route's highest point turned into per-day risk (thunderstorm, snow, wind, rain, night cold) with recommendations; live / record / replay |
+| `calculate_supplies` | Food, water, gas, tents, stoves, pots, first-aid kits, pack weight vs the section's limit; every coefficient with its source |
+
+Full contracts (exact descriptions, input/output schemas, errors, side effects, real examples): **[docs/tool-contracts.md](docs/tool-contracts.md)**.
+Obsidian tools used and their contracts: **[docs/obsidian-contract.md](docs/obsidian-contract.md)**.
+
+## Documentation
+
+| Document | Content |
+|---|---|
+| [docs/tool-contracts.md](docs/tool-contracts.md) | Contracts of the 4 custom tools, generated from the live server |
+| [docs/obsidian-contract.md](docs/obsidian-contract.md) | The existing server: configuration, role, `vault_read` / `vault_list` / `vault_write` / `vault_append`, failure behaviour |
+| [docs/design-rationale.md](docs/design-rationale.md) | Why Obsidian, why each tool is an MCP tool, how the tools support the workflow, trade-offs, limitations |
+| [docs/data-and-replay.md](docs/data-and-replay.md) | Data sources and licences, how the dataset is built, fixtures and replay mode, rate limits, secrets |
+| [docs/demo-script.md](docs/demo-script.md) | Defence script and checklist (Ukrainian) |
+| [research/](research/) | Research behind the Plast rules (51 sources) and the approval sheet |
+
+## Prerequisites
+- macOS or Linux with [uv](https://docs.astral.sh/uv/) (installs Python 3.12 by itself)
+- [Obsidian](https://obsidian.md) 1.15+ with the community plugin **Local REST API with MCP** (tested: plugin 5.5.2, Obsidian 1.15.1)
+- An [OpenRouter](https://openrouter.ai) API key. The default free model needs no credit (20 requests/min, 50/day); one agent run uses 3–6 model calls.
+
+## Installation and configuration
+```bash
+uv sync                      # dependencies into .venv (versions locked in uv.lock)
+cp .env.example .env         # then fill in OPENROUTER_API_KEY and OBSIDIAN_API_KEY
+```
+1. Obsidian → **Open folder as vault** → `demo-vault/` (a dedicated vault with fictional data; never a personal vault).
+2. Settings → Community plugins → install and enable **Local REST API with MCP** → copy its **API Key** into `.env`.
+3. Download the plugin's self-signed certificate once (Obsidian open):
+   ```bash
+   mkdir -p certs && curl -sk https://127.0.0.1:27124/obsidian-local-rest-api.crt -o certs/obsidian-local-rest-api.crt
+   ```
+4. Check the connection: `uv run check-obsidian` (lists 20 tools and reads one note).
+
+| Variable (`.env`) | Default | Meaning |
+|---|---|---|
+| `OPENROUTER_API_KEY` | — | required |
+| `OPENROUTER_MODEL` | `nvidia/nemotron-3.5-super-vl:free` | any OpenRouter model with tool calling |
+| `OBSIDIAN_API_KEY` | — | required; from the plugin settings |
+| `OBSIDIAN_MCP_URL` | `https://127.0.0.1:27124/mcp/` | the plugin's MCP endpoint |
+| `OBSIDIAN_CA_CERT` | `certs/obsidian-local-rest-api.crt` | used to verify TLS (not disabled) |
+| `PLAST_TRAIL_HOST` / `PLAST_TRAIL_PORT` | `127.0.0.1` / `8770` | where the custom server listens |
+| `WEATHER_MODE` | `replay` | `replay` (recorded forecasts, no network), `live`, `record` |
+
+## Run: two independent processes
+```bash
+# terminal 1: the custom MCP server
+uv run plast-trail                        # replay mode (default)
+WEATHER_MODE=live uv run plast-trail      # fresh forecasts from Open-Meteo
+
+# terminal 2: the agent
+uv run plast-agent --list                                     # request notes in the vault
+uv run plast-agent "Запити/Мандрівка гуртка Сокіл.md"         # writes Плани/... in Obsidian
+uv run plast-agent "Запити/Мандрівка гуртка Сокіл.md" --dry-run
+```
+The server can also be inspected with any MCP client, e.g. `npx @modelcontextprotocol/inspector` → Streamable HTTP → `http://127.0.0.1:8770/mcp`.
+
+## Offline / replay mode
+Weather is the only network call at runtime. In `replay` mode, the server reads genuine Open-Meteo responses recorded in `fixtures/open-meteo/` (one per route, 16 days) and passes them through the same parser and scoring as a live response. Re-record shortly before a demo:
+```bash
+uv run python scripts/record_weather.py
+```
+Details and rate limits: [docs/data-and-replay.md](docs/data-and-replay.md).
+
+## Checks
+```bash
+uv run pytest -q                          # 25 tests: domain logic + the agent workflow over in-memory MCP (no network)
+uv run python scripts/smoke_server.py     # all 4 tools over real MCP, incl. error cases and an empty result
+uv run check-obsidian                     # Obsidian discovery + one vault_read
+uv run python scripts/reset_demo.py       # clean the demo vault before a rehearsal
+```
+
+## Data
+```bash
+uv run python scripts/build_dataset.py    # rebuild data/routes.json from OSM + SRTM (raw downloads cached in data/raw/)
+uv run python scripts/gen_docs.py         # regenerate the contract docs from the live servers
+```
+Routes and points of interest © OpenStreetMap contributors (ODbL). Heights: SRTM 30 m (public domain) via OpenTopoData. Weather: Open-Meteo (CC BY 4.0).
+
+## Secrets
+Never committed (all in `.gitignore`): `.env`, `certs/`, `demo-vault/.obsidian/` (the plugin's `data.json` holds the API key and the TLS private key), agent output (`demo-vault/Плани/*.md`, `out/`).
+
+## Layout
+```
+src/plast_trail/   custom MCP server: server.py (tools), routes.py, validation.py, weather.py, supplies.py, models.py, data.py, errors.py
+src/plast_agent/   agent: cli.py, workflow.py (LangGraph), llm.py, mcp_links.py (MCP client), render.py, config.py, check_obsidian.py
+data/              routes.json (121 routes) · rules.yaml (DRAFT norms with sources)
+fixtures/          recorded Open-Meteo responses (replay)
+scripts/           build_dataset, record_weather, smoke_server, smoke_model, gen_docs, reset_demo
+tests/             pytest
+docs/              contracts, rationale, data/replay, demo script
+demo-vault/        Obsidian demo vault: Запити/ (requests), Правила/, Плани/ (agent output)
+```

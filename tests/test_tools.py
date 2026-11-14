@@ -1,0 +1,191 @@
+"""Tests for the plast-trail domain logic (no network: weather uses fixtures or synthetic data).
+
+Run:  uv run pytest -q
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import date
+
+import pytest
+
+from plast_trail import weather
+from plast_trail.errors import DomainError
+from plast_trail.models import GroupLimits, RiskLevel
+from plast_trail.routes import find_routes
+from plast_trail.validation import fmt_hhmm, sunset_local_minutes, validate_hike_plan
+
+ROUTE = "r8613349"  # с.Лазещина - г.Петрос - с.Ясіня, 33.3 km
+
+
+# ------------------------------------------------------------------ find_routes
+def test_find_routes_ranks_and_explains_exclusions():
+    r = find_routes("yunatstvo", 2, "chornohora", ["lake"], 3)
+    assert r.routes, "expected at least one route"
+    assert [x.fit_score for x in r.routes] == sorted((x.fit_score for x in r.routes), reverse=True)
+    assert all("lake" in x.features for x in r.routes)
+    assert r.excluded.get("other region", 0) > 0
+
+
+def test_find_routes_empty_is_a_result_not_an_error():
+    r = find_routes("novatstvo", 7, "marmarosy", ["lake"], 5)
+    assert r.routes == []
+    assert r.excluded
+    assert any("exceeds" in n for n in r.notes)  # 7 days > novatstvo max 2
+
+
+def test_novatstvo_night_spots_are_only_huts_or_campsites():
+    r = find_routes("novatstvo", 2, None, [], 10)
+    kinds = {o.kind for x in r.routes for o in x.overnight_options}
+    assert kinds <= {"hut", "campsite"}
+
+
+# ------------------------------------------------------------------ validate_hike_plan
+def test_too_long_day_suggests_an_even_split_with_shown_night_spots():
+    v = validate_hike_plan(ROUTE, "yunatstvo", 10, 2, ["w23", "w47"], None, None, GroupLimits(max_km_per_day=12))
+    assert not v.valid
+    km = [x for x in v.violations if x.code == "KM_PER_DAY_MAX"]
+    assert km and km[0].limit == 12 and km[0].source.startswith("group note")
+    assert "w30" in km[0].suggestion and "w56" in km[0].suggestion
+
+
+def test_too_few_days_is_said_honestly():
+    v = validate_hike_plan(ROUTE, "yunatstvo", 10, 2, ["w47"], None, None, GroupLimits(max_km_per_day=12))
+    km = [x for x in v.violations if x.code == "KM_PER_DAY_MAX"]
+    assert "needs at least 3 days" in km[0].suggestion
+
+
+def test_night_spot_at_the_very_start_is_refused():
+    with pytest.raises(DomainError) as e:
+        validate_hike_plan("r21241643", "yunatstvo", 10, 2, ["w1"], None, None, None)
+    assert e.value.code == "WAYPOINT_ORDER"
+
+
+def test_following_the_suggestions_gives_a_valid_plan():
+    v = validate_hike_plan(ROUTE, "yunatstvo", 10, 2, ["w30", "w56"], None, None, GroupLimits(max_km_per_day=12))
+    assert v.valid
+    assert len(v.days) == 3
+    assert v.total_km == pytest.approx(33.3, abs=0.2)
+    assert all(d.km <= 12 for d in v.days)
+
+
+def test_adult_rules():
+    v = validate_hike_plan(ROUTE, "yunatstvo", 10, 1, ["w30", "w56"], None, None, None)
+    codes = {x.code for x in v.violations}
+    assert {"TOO_FEW_ADULTS", "ADULT_RATIO"} <= codes
+
+
+def test_waypoint_errors():
+    with pytest.raises(DomainError) as e:
+        validate_hike_plan(ROUTE, "yunatstvo", 10, 2, ["w56", "w30"], None, None, None)
+    assert e.value.code == "WAYPOINT_ORDER"
+    with pytest.raises(DomainError) as e:
+        validate_hike_plan(ROUTE, "yunatstvo", 10, 2, ["w999"], None, None, None)
+    assert e.value.code == "WAYPOINT_NOT_FOUND"
+    with pytest.raises(DomainError) as e:
+        validate_hike_plan("r1", "yunatstvo", 10, 2, [], None, None, None)
+    assert e.value.code == "ROUTE_NOT_FOUND"
+
+
+def test_sunset_is_close_to_reality():
+    # Kyiv, summer solstice: real sunset is about 21:12 local time.
+    m = sunset_local_minutes(date(2026, 6, 21), 50.45, 30.52)
+    assert abs(m - (21 * 60 + 12)) <= 5, fmt_hhmm(m)
+
+
+def test_error_payload_is_json_with_code():
+    err = DomainError("ROUTE_NOT_FOUND", "No route", "hint").to_tool_error()
+    assert json.loads(str(err))["error"]["code"] == "ROUTE_NOT_FOUND"
+
+
+# ------------------------------------------------------------------ assess_weather_risk
+def synthetic_body(start: str, n: int, **overrides):
+    """An Open-Meteo-shaped daily block; same parser as live and replay."""
+    days = [date.fromisoformat(start).replace(day=date.fromisoformat(start).day + i).isoformat() for i in range(n)]
+    base = {"weather_code": 1, "temperature_2m_max": 15.0, "temperature_2m_min": 5.0, "precipitation_sum": 0.0,
+            "precipitation_probability_max": 10, "wind_speed_10m_max": 5.0, "wind_gusts_10m_max": 9.0}
+    base.update(overrides)
+    return {"daily": {"time": days, **{k: [v] * n for k, v in base.items()}}}
+
+
+@pytest.fixture
+def replay_with(monkeypatch):
+    def install(body):
+        monkeypatch.setenv("WEATHER_MODE", "replay")
+        monkeypatch.setattr(weather, "load_fixture", lambda route_id, needed: (body, "2026-11-14T00:00:00+00:00"))
+    return install
+
+
+def test_thunderstorm_above_treeline_is_high(replay_with):
+    replay_with(synthetic_body("2026-07-10", 4, weather_code=95))
+    r = weather.assess_weather_risk(ROUTE, date(2026, 7, 10), ["w30", "w56"])
+    exposed_days = [d for d in r.days if d.exposed]
+    assert exposed_days and all(d.risk == RiskLevel.high for d in exposed_days)
+    assert r.overall_risk == RiskLevel.high
+
+
+def test_calm_summer_is_low(replay_with):
+    replay_with(synthetic_body("2026-07-10", 4))
+    r = weather.assess_weather_risk(ROUTE, date(2026, 7, 10), ["w30", "w56"])
+    assert r.overall_risk == RiskLevel.low
+
+
+def test_night_temperature_uses_lapse_rate(replay_with):
+    replay_with(synthetic_body("2026-07-10", 4, temperature_2m_min=-1.0))
+    r = weather.assess_weather_risk(ROUTE, date(2026, 7, 10), ["w30", "w56"])
+    first_night = r.days[0].night_spot_min_c
+    # w30 is ~1100 m below the forecast point, so the night there is ~7 °C warmer than at the top.
+    assert first_night > 5
+
+
+def test_replay_of_recorded_fixture_matches_structure():
+    weather_mode = weather.mode
+    files = sorted(weather.FIXTURES.glob(f"{ROUTE}_*.json"))
+    if not files:
+        pytest.skip("no recorded fixture")
+    rec = json.loads(files[-1].read_text(encoding="utf-8"))
+    first = rec["response"]["daily"]["time"][1]
+    import os
+    os.environ["WEATHER_MODE"] = "replay"
+    try:
+        r = weather.assess_weather_risk(ROUTE, date.fromisoformat(first), ["w30", "w56"])
+    finally:
+        os.environ.pop("WEATHER_MODE", None)
+    assert r.mode == "replay" and len(r.days) == 3 and weather_mode
+
+
+# ------------------------------------------------------------------ calculate_supplies
+from plast_trail.models import DayLoad  # noqa: E402
+from plast_trail.supplies import calculate_supplies  # noqa: E402
+
+
+def _days():
+    return [DayLoad(km=11.3, ascent_m=201, walking_hours=3.3), DayLoad(km=11.0, ascent_m=1087, walking_hours=5.2),
+            DayLoad(km=11.0, ascent_m=31, walking_hours=2.8)]
+
+
+def test_supplies_numbers_trace_to_coefficients():
+    s = calculate_supplies("yunatstvo", 10, 2, _days(), 0, None, 3, None, None, None)
+    assert s.people == 12 and s.days == 3
+    assert s.food_kg_group == pytest.approx(3 * 12 * 0.9)          # 0.9 kg/person/day
+    assert s.gas_g_group == 12 * 3 * 25                            # 25 g/person/day, no frost
+    assert s.stoves == 2 and s.pots == 6 and s.tents == 4 and s.first_aid_kits == 2
+    assert all(w >= 3.0 for w in s.water_l_per_person_by_day)     # 3 l/day floor
+    names = {a.name for a in s.assumptions}
+    assert "food_kg_per_person_day.yunatstvo" in names and "gas_g_per_person_day" in names
+
+
+def test_cold_night_raises_gas_and_adds_gear():
+    s = calculate_supplies("yunatstvo", 10, 2, _days(), 1, -3.0, 3, None, None, None)
+    assert s.gas_g_group == round(12 * 3 * 25 * 1.5)
+    assert any("зимові спальники" in g for g in s.gear_additions)
+    assert s.water_to_carry_for_dry_nights_l == pytest.approx(12 * 1.5)
+
+
+def test_pack_check_uses_measured_gear_only():
+    no_gear = calculate_supplies("yunatstvo", 10, 2, _days(), 0, None, 3, None, None, None)
+    assert no_gear.pack_participant.within_limit is None           # no invented base weight
+    assert no_gear.pack_participant.remaining_for_gear_kg == pytest.approx(9 - (2.7 + 1.0))
+    heavy = calculate_supplies("yunatstvo", 10, 2, _days(), 0, None, 3, None, 6.0, None)
+    assert heavy.pack_participant.within_limit is False            # 2.7 + 1.0 + 6.0 > 9
