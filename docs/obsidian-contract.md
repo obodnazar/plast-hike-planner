@@ -53,7 +53,7 @@ A Plast leader already keeps notes; Obsidian is where the request is written in 
   "frontmatter": {},
   "stat": {
     "ctime": 1794688627436,
-    "mtime": 1794693423015,
+    "mtime": 1794694081542,
     "size": 1069
   },
   "path": "Запити/Мандрівка гуртка Сокіл.md",
@@ -140,7 +140,7 @@ A Plast leader already keeps notes; Obsidian is where the request is written in 
 ```json
 {
   "message": "OK",
-  "version": "36dcc3"
+  "version": "1cdf01"
 }
 ```
 

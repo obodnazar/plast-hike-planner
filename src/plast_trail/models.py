@@ -139,6 +139,7 @@ class RouteSummary(BaseModel):
                     "both ends). validate_hike_plan suggestions only name ids from this list. Empty for a one-day hike")
     fit_score: float = Field(ge=0, le=1, description="How well the length suits the daily distance, 1 = ideal")
     fit_reasons: list[str] = Field(description="Plain-language reasons behind the score")
+    places_matched: list[str] = Field(default_factory=list, description="Which of the requested named places this route passes")
 
 
 class FindRoutesResult(BaseModel):

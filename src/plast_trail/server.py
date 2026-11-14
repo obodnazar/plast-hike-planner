@@ -107,9 +107,10 @@ def find_routes(
     must_include: Annotated[list[Feature], Field(max_length=4, description="Features the route must pass, e.g. ['lake']")] = [],  # noqa: B006
     max_results: Annotated[int, Field(ge=1, le=10, description="How many routes to return")] = 5,
     max_km_per_day: Annotated[float | None, Field(ge=1, le=40, description="The group's own stricter daily limit (from the request); routes longer than days × this are excluded and the ranking aims at it")] = None,
+    places: Annotated[list[Annotated[str, Field(min_length=3, max_length=40)]], Field(max_length=3, description="Named peaks, lakes or villages to pass, e.g. ['Говерла', 'Петрос'] (any case form). Routes passing all of them first; if none does, routes passing at least one, with a note")] = [],  # noqa: B006
 ) -> FindRoutesResult:
     return routes.find_routes(section.value, days, region.value if region else None,
-                              [f.value for f in must_include], max_results, max_km_per_day)
+                              [f.value for f in must_include], max_results, max_km_per_day, places)
 
 
 @mcp.tool(

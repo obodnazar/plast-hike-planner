@@ -45,6 +45,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 | `must_include` | array of enum: `lake` / `peak` / `water` / `hut` / `shelter` / `campsite` | no | max items `4` | `[]` | Features the route must pass, e.g. ['lake'] |
 | `max_results` | integer | no | ≥ `1`, ≤ `10` | `5` | How many routes to return |
 | `max_km_per_day` | number \| null | no | ≥ `1`, ≤ `40` | `null` | The group's own stricter daily limit (from the request); routes longer than days × this are excluded and the ranking aims at it |
+| `places` | array of string | no | max items `3`, items: min len `3`, max len `40` | `[]` | Named peaks, lakes or villages to pass, e.g. ['Говерла', 'Петрос'] (any case form). Routes passing all of them first; if none does, routes passing at least one, with a note |
 
 **Output schema** (`structuredContent`; the same JSON is also sent as text)
 
@@ -90,6 +91,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 | `overnight_options` | array of object `OvernightOption` | Up to 12 night spots allowed for this section, spread along the route (at least 1 km from both ends). validate_hike_plan suggestions only name ids from this list. Empty for a one-day hike |
 | `fit_score` | number | How well the length suits the daily distance, 1 = ideal |
 | `fit_reasons` | array of string | Plain-language reasons behind the score |
+| `places_matched` | array of string | Which of the requested named places this route passes |
 
 </details>
 
@@ -165,7 +167,8 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
         "11.1 km/day vs target 15 km/day",
         "hard limit 20 km/day leaves 8.9 km/day margin",
         "... 2 more"
-      ]
+      ],
+      "places_matched": []
     },
     {
       "id": "r8613511",
@@ -208,7 +211,8 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
         "4.2 km/day vs target 15 km/day",
         "hard limit 20 km/day leaves 15.8 km/day margin",
         "... 2 more"
-      ]
+      ],
+      "places_matched": []
     }
   ],
   "excluded": {

@@ -21,16 +21,19 @@ from plast_agent.workflow import MISSING_UA, understand
 BOLD, CYAN, YELLOW, RESET = "\033[1m", "\033[36m", "\033[33m", "\033[0m"
 
 QUESTIONS = {
-    "section": "Яка вікова група: новацтво, юнацтво чи старші?",
-    "participants": "Скільки учасників (без дорослих)?",
-    "adults": "Скільки дорослих виховників іде з групою?",
+    "section": "Хто йде: новацтво (6–10 років), юнацтво (11–17) чи старші / дорослі (18+)? Можна просто вік.",
+    "participants": "Скільки учасників (без дорослих супровідників)?",
+    "adults": "Скільки дорослих (виховників, супроводу) іде з групою?",
     "days": "Скільки днів триватиме мандрівка?",
     "start_date": "Коли старт? (наприклад, «21 листопада» або «наступної суботи»)",
 }
+QUESTIONS_SENIOR = {"participants": "Скільки вас усього?"}
+LABELS = {"section": "Група", "participants": "Учасників", "adults": "Дорослих", "days": "Днів", "start_date": "Старт"}
 OPTIONAL = {
     "region": "У якому районі? Чорногора, Горгани, Свидовець, Мармароси, Яремче–Ворохта (Enter — будь-який)",
 }
-MAX_ROUNDS = 4
+MAX_ROUNDS = 6
+MAX_EMPTY = 3
 
 Ask = Callable[[str], Awaitable[str]]
 
@@ -53,6 +56,31 @@ async def read_description(ask: Ask) -> str:
         lines.append(line)
 
 
+def guess_section(answer: str) -> str | None:
+    """Read the group from a short answer without a model call: a word or an age."""
+    a = answer.lower()
+    for words, section in ((("новац", "новак", "упн", "рій"), "novatstvo"),
+                           (("юнац", "юнак", "юначк", "упю", "гурт", "підліт"), "yunatstvo"),
+                           (("старш", "сеньйор", "сенйор", "сенiор", "сеніор", "упс", "усп", "доросл"), "senior")):
+        if any(w in a for w in words):
+            return section
+    ages = [int(n) for n in re.findall(r"\d+", a) if 3 <= int(n) <= 99]
+    if ages:
+        age = min(ages)
+        return "novatstvo" if age <= 10 else "yunatstvo" if age <= 17 else "senior"
+    return None
+
+
+async def ask_required(ask: Ask, question: str) -> str:
+    """Ask again on an empty answer: these facts are needed for the plan."""
+    for _ in range(MAX_EMPTY):
+        answer = await ask(f"{YELLOW}? {question}{RESET} ")
+        if answer:
+            return answer
+        print("  Це потрібно для плану — напишіть, будь ласка, коротко.")
+    return ""
+
+
 def safe_title(text: str) -> str:
     return re.sub(r'[\\/:*?"<>|#^\[\]]', "", text).strip()[:80]
 
@@ -65,16 +93,27 @@ async def chat(links: McpLinks, llm: LLM, ask: Ask = terminal_ask) -> tuple[str,
         print(f"\n{CYAN}Думаю над запитом… (безкоштовна модель може думати до хвилини){RESET}")
         request, notes, missing = await understand(llm, text)
         answers = []
-        for key in missing:  # ask only what is needed, one question at a time
-            answer = await ask(f"{YELLOW}? {QUESTIONS[key]}{RESET} ")
-            if answer:
-                answers.append(f"- {MISSING_UA[key].capitalize()}: {answer}")
+        section = request.get("section")
+        for key in missing:  # one question at a time, the group first (it changes the next questions)
+            if key == "adults" and section == "senior":
+                answers.append("- Дорослих супровідників: 0 (група дорослих)")
+                continue
+            question = QUESTIONS_SENIOR.get(key, QUESTIONS[key]) if section == "senior" else QUESTIONS[key]
+            answer = await ask_required(ask, question)
+            if not answer:
+                continue
+            if key == "section":
+                section = guess_section(answer) or section
+            answers.append(f"- {LABELS[key]}: {answer}")
         for key, question in OPTIONAL.items():
             if request.get(key) is None and key not in asked_optional and not missing:
                 asked_optional.add(key)
                 answer = await ask(f"{YELLOW}? {question}{RESET} ")
                 if answer:
                     answers.append(f"- Район: {answer}")
+        if missing and not answers:
+            print("  Без цих даних план не скласти. Почніть, будь ласка, спочатку.")
+            return None
         if answers:
             text += "\n\nУточнення:\n" + "\n".join(answers)
             continue

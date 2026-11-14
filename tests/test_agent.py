@@ -283,3 +283,38 @@ def test_model_deadline_gives_a_readable_error():
     with pytest.raises(L.LLMError) as e:
         asyncio.run(model._deadline(Slow(), [], 0.1))
     assert "не відповіла за" in str(e.value)
+
+
+def test_chat_with_two_adults_and_named_peaks_like_the_real_session():
+    """Replays the leader's real test: 'іду я із сестрою… на Говерлу 23-го, спуститися біля Петроса 24-го'."""
+    first = {"section": None, "participants": 2, "adults": None, "days": 2, "start_date": "2026-11-23",
+             "date_flexibility_days": 0, "region": "chornohora", "must_include": ["peak"],
+             "places": ["Говерла", "Петрос"], "start_time": None}
+    second = {**first, "section": "senior", "adults": 0}
+    proposal = {"route_id": "r8613511", "overnight_waypoint_ids": ["w4"], "start_date": "2026-11-23",
+                "reasoning": "через Говерлу"}
+    code, obsidian, asked = run_chat(FakeLLM(first, [second, proposal]), [
+        "іду я із сестрою, хочемо на говерлу піднятися 23 листопада, а 24 спуститися біля петроса", "",
+        "",               # an empty answer: the agent must ask again, not continue with None
+        "20 років нам",   # the group from an age, no model call needed
+        "",               # confirm
+        "",               # automatic title
+    ])
+    assert code == 0
+    section_questions = [q for q in asked if "Хто йде" in q]
+    assert len(section_questions) == 2                                   # asked again after the empty answer
+    assert not any("дорослих (виховників" in q for q in asked)          # adults are not asked for an adult group
+    request = next(v for k, v in obsidian.written.items() if k.startswith("Запити/"))
+    assert "Група: 20 років нам" in request and "Дорослих супровідників: 0" in request
+    plan = next(v for k, v in obsidian.written.items() if k.startswith("Плани/"))
+    assert "старші / сеніори, вас 2" in plan
+    assert "Жоден маршрут у даних не проходить через усі місця (Говерла, Петрос)" in plan
+
+
+def test_guess_section_from_words_and_ages():
+    from plast_agent.chat import guess_section
+    assert guess_section("20 років нам") == "senior"
+    assert guess_section("нам по 14") == "yunatstvo"
+    assert guess_section("новачки, рій") == "novatstvo"
+    assert guess_section("дорослі") == "senior"
+    assert guess_section("не знаю") is None

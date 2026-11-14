@@ -60,13 +60,19 @@ def request_lines(r: dict[str, Any], notes: list[str]) -> list[str]:
     limits = {"max_km_per_day": "км/день", "max_ascent_per_day_m": "м набору/день",
               "max_walking_hours_per_day": "год ходу/день", "max_overnight_elevation_m": "м — найвища ночівля"}
     lim = ", ".join(f"{num(r[k])} {u}" for k, u in limits.items() if r.get(k)) or "немає"
+
+    def v(key):
+        return "не вказано" if r.get(key) is None else r.get(key)
+
+    people = (f"вас {v('participants')}" if r.get("section") == "senior" and not r.get("adults")
+              else f"учасників {v('participants')}, дорослих {v('adults')}")
     out = [
-        f"- Група: {SECTION_UA.get(r.get('section'), r.get('section'))}, учасників {r.get('participants')}, "
-        f"дорослих {r.get('adults')}",
-        f"- Дні: {r.get('days')}, старт {r.get('start_date')} о {r.get('start_time')}"
+        f"- Група: {SECTION_UA.get(r.get('section'), 'не вказано')}, {people}",
+        f"- Дні: {v('days')}, старт {v('start_date')} о {r.get('start_time') or '08:00'}"
         + (f", можна зсунути до {r['date_flexibility_days']} дн. пізніше" if r.get("date_flexibility_days") else ""),
         f"- Район: {r.get('region') or 'будь-який'}; побажання: "
-        + (", ".join(FEATURE_UA.get(f, f) for f in r.get("must_include") or []) or "немає"),
+        + (", ".join(FEATURE_UA.get(f, f) for f in r.get("must_include") or []) or "немає")
+        + (f"; місця: {', '.join(r['places'])}" if r.get("places") else ""),
         f"- Обмеження групи: {lim}",
     ]
     if r.get("lightest_body_weight_kg") or r.get("participant_base_gear_kg"):

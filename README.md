@@ -109,7 +109,7 @@ uv run plast-agent "Запити/Мандрівка гуртка Сокіл.md" 
 uv run plast-agent "Запити/Мандрівка гуртка Сокіл.md" --dry-run
 uv run plast-agent --chat
 ```
-`--chat` lets the leader describe the hike in their own words in the terminal. The agent shows what it understood, asks only about what is missing (group, number of people and adults, days, start date, and optionally the region), lets the leader correct it, saves the request as a note in `Запити/` (`vault_write`) and then plans as for any note.
+`--chat` lets the leader describe the hike in their own words in the terminal. The agent shows what it understood, asks only about what is missing (group, number of people and adults, days, start date, and optionally the region), re-asks on an empty answer, lets the leader correct it, saves the request as a note in `Запити/` (`vault_write`) and then plans as for any note. Ages decide the section (18+ or a group of adults → «старші», with everyone counted as a participant), and named places («на Говерлу, біля Петроса») are passed to `find_routes` as `places`. If no route passes all of them, the agent says so and offers routes through at least one.
 
 Model calls have hard deadlines (120 s for parsing and proposals, 45 s for the closing paragraph). OpenRouter keeps slow free-model connections alive, so an HTTP read timeout alone may never fire. If the closing paragraph times out, the agent writes a factual summary instead.
 The server can also be inspected with any MCP client, e.g. `npx @modelcontextprotocol/inspector` → Streamable HTTP → `http://127.0.0.1:8770/mcp`.

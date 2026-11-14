@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import ssl
 import sys
 from datetime import date
@@ -289,7 +290,7 @@ async def custom_contracts() -> list[str]:
          "",
          "Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT`, `DATE_OUT_OF_RANGE`, "
          "`WEATHER_UNAVAILABLE`, `WEATHER_FIXTURE_MISSING`, `DATA_UNAVAILABLE`, `INTERNAL_ERROR`.", ""]
-    async with streamable_http_client("http://127.0.0.1:8770/mcp") as (r, w, _):
+    async with streamable_http_client(os.environ.get("PLAST_TRAIL_URL", "http://127.0.0.1:8770/mcp")) as (r, w, _):
         async with ClientSession(r, w) as s:
             init = await s.initialize()
             tools = {t.name: t for t in (await s.list_tools()).tools}

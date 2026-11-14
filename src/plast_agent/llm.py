@@ -38,12 +38,13 @@ class ParsedRequest(Lenient):
     """Facts from the leader's request note. Use null when the note does not say; the code then asks for them."""
 
     section: Literal["novatstvo", "yunatstvo", "senior"] | None = Field(
-        description="novatstvo = новацтво/УПН/новаки/рій/гніздо (6-11); yunatstvo = юнацтво/УПЮ/юнаки/юначки/"
-                    "гурток/курінь (11-18); senior = старші пластуни/УСП/УПС/сеніори (18+)")
+        description="novatstvo = новацтво/УПН/новаки/рій/гніздо or ages 6-10; yunatstvo = юнацтво/УПЮ/юнаки/юначки/"
+                    "гурток/курінь or ages 11-17; senior = старші пластуни/УСП/УПС/сеніори, any group of adults or ages 18+")
     participants: int | None = Field(default=None, ge=1, le=60,
-        description="Participants of the section, WITHOUT adults ('12 разом з 2 виховниками' -> 10)")
+        description="Participants WITHOUT accompanying adults ('12 разом з 2 виховниками' -> 10). For a senior/adult "
+                    "group: everybody in the group ('я із сестрою' -> 2)")
     adults: int | None = Field(default=None, ge=0, le=30,
-        description="Adult leaders (виховники, провідники, батьки-супровід)")
+        description="Accompanying adult leaders (виховники, провідники, батьки-супровід); 0 for a senior/adult group")
     days: int | None = Field(default=None, ge=1, le=7,
         description="Hiking days. 'N ночівель' -> N+1; a range '2-3 дні' -> the larger; 'вихідні' -> 2")
     start_date: date | None = Field(default=None,
@@ -59,6 +60,9 @@ class ParsedRequest(Lenient):
         "хатина/колиба -> hut, притулок -> shelter, табірне місце -> campsite")
     start_time: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$",
         description="Daily start time H:MM or HH:MM ('не пізніше 8:00' -> '8:00'); null if not said")
+    places: list[str] | None = Field(default=None,
+        description="Named peaks, lakes or villages the group wants to visit or pass, nominative case, at most 3 "
+                    "('піднятися на Говерлу, спуститися біля Петроса' -> ['Говерла', 'Петрос'])")
     max_km_per_day: float | None = Field(default=None, description="Group's own km/day limit, null if not said")
     max_ascent_per_day_m: int | None = Field(default=None, description="Group's own ascent limit per day, m")
     max_walking_hours_per_day: float | None = Field(default=None, description="Group's own walking-hours limit")

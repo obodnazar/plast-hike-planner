@@ -59,15 +59,51 @@ def overnight_options(route: dict[str, Any], section: str, limit: int = 12) -> l
     ]
 
 
+PLACE_PREFIXES = ("г.", "гора ", "оз.", "озеро ", "с.", "село ", "смт ", "пол.", "полонина ", "пер.")
+
+
+def place_stems(place: str) -> list[str]:
+    """'Говерлу' -> ['говер']; 'Піп Іван' -> ['піп', 'іва']: word stems that survive Ukrainian case endings."""
+    t = place.lower().replace("ґ", "г").strip()
+    for pre in PLACE_PREFIXES:
+        if t.startswith(pre):
+            t = t[len(pre):].strip()
+    words = [w for w in t.replace("-", " ").split() if len(w) >= 3]
+    # drop the case ending: 2 letters from long words ('говерлу' -> 'говер'), 1 from short ones
+    # ('петрос' -> 'петро', so it does not match 'Петраш'); never shorter than 4 letters
+    return [w if len(w) <= 4 else w[: max(4, len(w) - (2 if len(w) >= 7 else 1))] for w in words]
+
+
+def route_text(r: dict[str, Any]) -> str:
+    return " ".join([r["name"]] + [w["name"] for w in r["waypoints"]]).lower().replace("ґ", "г")
+
+
+def matched_places(r: dict[str, Any], places: list[str]) -> list[str]:
+    text = route_text(r)
+    return [p for p in places if place_stems(p) and all(stem in text for stem in place_stems(p))]
+
+
 def find_routes(section: str, days: int, region: str | None, must_include: list[str],
-                max_results: int, group_max_km_per_day: float | None = None) -> FindRoutesResult:
+                max_results: int, group_max_km_per_day: float | None = None,
+                places: list[str] | None = None) -> FindRoutesResult:
     routes = load_routes()
+    places = [p for p in (places or []) if place_stems(p)]
+    if places:  # named places: all of them if any route allows it, otherwise at least one
+        full = [r for r in routes.values() if len(matched_places(r, places)) == len(places)]
+        if not full:
+            partial = {k: r for k, r in routes.items() if matched_places(r, places)}
+            note = (f"No route in the dataset passes all of: {', '.join(places)}. Showing routes that pass "
+                    "at least one of them; tell the user.")
+            routes = partial
+        else:
+            note = ""
+            routes = {r["id"]: r for r in full}
     target, hard = daily_targets(section)
     if group_max_km_per_day:  # the group's own limit only makes things stricter
         hard = min(hard, group_max_km_per_day) if hard else group_max_km_per_day
         target = min(target, group_max_km_per_day)
     excluded: dict[str, int] = {}
-    notes: list[str] = []
+    notes: list[str] = [note] if places and note else []
 
     max_days = section_rule(section, "max_days")
     if max_days["value"] and days > max_days["value"]:
@@ -102,11 +138,16 @@ def find_routes(section: str, days: int, region: str | None, must_include: list[
 
         avg = r["length_km"] / days
         score = max(0.0, 1 - abs(avg - target) / target)
+        hit = matched_places(r, places) if places else []
+        if places:
+            score = round(score * (0.5 + 0.5 * len(hit) / len(places)), 2)  # more of the named places = better
         reasons = [f"{avg:.1f} km/day vs target {target:g} km/day"]
         if hard:
             reasons.append(f"hard limit {hard:g} km/day leaves {hard - avg:.1f} km/day margin")
         if must_include:
             reasons.append("has " + ", ".join(must_include))
+        if places:
+            reasons.append(f"passes {', '.join(hit)}" if hit else "passes none of the named places")
         if days > 1:
             reasons.append(f"{len(options)} allowed night spots for {days - 1} night(s)")
 
@@ -116,7 +157,7 @@ def find_routes(section: str, days: int, region: str | None, must_include: list[
             loop=r["loop"], start=r["waypoints"][0]["name"], finish=r["waypoints"][-1]["name"],
             avg_km_per_day=round(avg, 1), features=sorted(kinds - {"start", "finish"}),
             overnight_options=options if days > 1 else [],
-            fit_score=round(score, 2), fit_reasons=reasons,
+            fit_score=round(score, 2), fit_reasons=reasons, places_matched=hit,
         ))
 
     found.sort(key=lambda s: (-s.fit_score, s.ascent_m))
