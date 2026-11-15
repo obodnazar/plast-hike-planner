@@ -20,6 +20,7 @@ from pathlib import Path
 
 from plast_agent.config import PROJECT_ROOT, ConfigError, load_settings
 from plast_agent.chat import chat
+from plast_agent import llm as llm_mod
 from plast_agent.llm import LLM, LLMError
 from plast_agent.mcp_links import ConnectionFailure, McpCallError, McpLinks, _leaves, explain_connection
 from plast_agent.render import render_plan
@@ -28,11 +29,38 @@ from plast_agent.workflow import AgentStop, build_graph, now_kyiv
 BOLD, RED, GREEN, YELLOW, RESET = "\033[1m", "\033[31m", "\033[32m", "\033[33m", "\033[0m"
 
 
+def make_llm(settings, local: bool = False) -> LLM:
+    """Pick where the model answers from, and say it: quota left today, fallback ready or not."""
+    if local:
+        usable, local_msg = llm_mod.ollama_status(settings)
+        print(f"  Модель: лише локальна ({local_msg})")
+        if not usable:
+            raise LLMError(local_msg)
+        return LLM(providers=llm_mod.build_providers(settings, True), start_with_fallback=True)
+    left = llm_mod.free_requests_left(settings)
+    usable, local_msg = llm_mod.ollama_status(settings) if settings.ollama_enabled else (False, "запасна модель вимкнена")
+    exhausted = llm_mod.quota_exhausted_now()
+    low = exhausted or (left is not None and left < llm_mod.MIN_FREE_REQUESTS)
+    quota = "невідомо скільки" if left is None else f"{left}"
+    print(f"  Модель: openrouter/{settings.openrouter_model} — сьогодні лишилось {quota} безкоштовних запитів"
+          + (" (ліміт вичерпано до 02:00 Києва)" if exhausted else ""))
+    print(f"  Запасна: {local_msg}")
+    if low and usable:
+        print(f"  {YELLOW}Запитів замало: працюю на локальній моделі {settings.ollama_model}.{RESET}")
+    elif low:
+        print(f"  {YELLOW}Запитів замало, а запасної моделі немає: прогін може зупинитися на ліміті.{RESET}")
+    return LLM(providers=llm_mod.build_providers(settings, usable), start_with_fallback=low and usable)
+
+
 async def plan_and_write(links: McpLinks, settings, request_path: str | None, dry_run: bool, llm=None,
-                         chat_mode: bool = False, ask=None) -> int:
+                         chat_mode: bool = False, ask=None, local: bool = False) -> int:
     """Everything after both servers are connected. Catches its own errors and returns an exit code."""
     started = time.monotonic()
-    llm = llm or LLM(settings)
+    try:
+        llm = llm or make_llm(settings, local)
+    except LLMError as exc:
+        print(f"\n{RED}Модель недоступна:{RESET} {exc}")
+        return 1
     graph = build_graph(links, llm)
     try:
         start: dict = {"request_path": request_path}
@@ -59,7 +87,7 @@ async def plan_and_write(links: McpLinks, settings, request_path: str | None, dr
             traceback.print_exception(leaf, file=sys.stderr)
         return 1
 
-    note = render_plan(state, request_path, llm.model_name, now_kyiv())
+    note = render_plan({**state, "model_switches": getattr(llm, "switches", [])}, request_path, llm.model_name, now_kyiv())
     plan_path = f"Плани/{Path(request_path).stem} — план.md"
     print(f"\n{BOLD}━━ 9. Записую план в Obsidian: {plan_path}{RESET}")
     if dry_run:
@@ -81,11 +109,13 @@ async def plan_and_write(links: McpLinks, settings, request_path: str | None, dr
 
     colour = {"ok": GREEN, "attention": YELLOW, "risky": YELLOW}.get(state.get("status"), RED)
     print(f"\n{colour}{BOLD}Готово: {state.get('status')}{RESET} · спроб плану: {len(state.get('attempts', []))} · "
-          f"виклики LLM: {llm.calls} · виклики MCP: {links.calls} · {time.monotonic() - started:.0f} с")
+          f"виклики LLM: {llm.calls} ({', '.join(f'{k} {v}' for k, v in getattr(llm, 'calls_by', {}).items())}) · "
+          f"виклики MCP: {links.calls} · {time.monotonic() - started:.0f} с")
     return 0 if state.get("status") in ("ok", "attention", "risky") else 1
 
 
-async def run(request_path: str | None, list_only: bool, dry_run: bool, chat_mode: bool = False) -> int:
+async def run(request_path: str | None, list_only: bool, dry_run: bool, chat_mode: bool = False,
+              local: bool = False) -> int:
     try:
         settings = load_settings(need_model=not list_only)
     except ConfigError as exc:
@@ -103,7 +133,8 @@ async def run(request_path: str | None, list_only: bool, dry_run: bool, chat_mod
                 return 0
             try:
                 async with links.open("plast-trail"):
-                    return await plan_and_write(links, settings, request_path, dry_run, chat_mode=chat_mode)
+                    return await plan_and_write(links, settings, request_path, dry_run, chat_mode=chat_mode,
+                                                local=local)
             except Exception as exc:
                 if links.reported:
                     return 1
@@ -124,10 +155,11 @@ def main() -> None:
     ap.add_argument("--list", action="store_true", help="list request notes and exit")
     ap.add_argument("--dry-run", action="store_true", help="do not write the plan to Obsidian")
     ap.add_argument("--chat", action="store_true", help="describe the hike in the terminal; the agent asks what is missing")
+    ap.add_argument("--local", action="store_true", help="use only the local Ollama model (no OpenRouter quota)")
     args = ap.parse_args()
     if not args.list and not args.request and not args.chat:
         ap.error("give a request note path, or --chat, or --list")
-    sys.exit(asyncio.run(run(args.request, args.list, args.dry_run, args.chat)))
+    sys.exit(asyncio.run(run(args.request, args.list, args.dry_run, args.chat, args.local)))
 
 
 if __name__ == "__main__":

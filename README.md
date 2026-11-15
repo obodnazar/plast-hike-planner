@@ -86,6 +86,12 @@ cp .env.example .env         # then fill in OPENROUTER_API_KEY and OBSIDIAN_API_
    mkdir -p certs && curl -sk https://127.0.0.1:27124/obsidian-local-rest-api.crt -o certs/obsidian-local-rest-api.crt
    ```
 4. Check the connection: `uv run check-obsidian` (lists 20 tools and reads one note).
+5. Optional, recommended: a local fallback model for when the free OpenRouter quota (50 requests/day) runs out. Install [Ollama](https://ollama.com) (tested with 0.40.16), then:
+   ```bash
+   ollama pull gemma4:12b
+   ollama create plast-gemma -f ollama/Modelfile
+   ```
+   The Modelfile raises the context to 8192 tokens (Ollama's default 4096 silently cuts long prompts) and sets temperature 0.
 
 | Variable (`.env`) | Default | Meaning |
 |---|---|---|
@@ -95,6 +101,7 @@ cp .env.example .env         # then fill in OPENROUTER_API_KEY and OBSIDIAN_API_
 | `OBSIDIAN_MCP_URL` | `https://127.0.0.1:27124/mcp/` | the plugin's MCP endpoint |
 | `OBSIDIAN_CA_CERT` | `certs/obsidian-local-rest-api.crt` | used to verify TLS (not disabled) |
 | `PLAST_TRAIL_HOST` / `PLAST_TRAIL_PORT` | `127.0.0.1` / `8770` | where the custom server listens |
+| `OLLAMA_FALLBACK` / `OLLAMA_MODEL` / `OLLAMA_BASE_URL` | `1` / `plast-gemma` / `http://localhost:11434/v1` | local fallback model |
 | `WEATHER_MODE` | `replay` | `replay` (recorded forecasts, no network) or `live`; fixtures are recorded with `scripts/record_weather.py` |
 
 ## Run: two independent processes
@@ -108,8 +115,11 @@ uv run plast-agent --list                                     # request notes in
 uv run plast-agent "Запити/Мандрівка гуртка Сокіл.md"         # writes Плани/... in Obsidian
 uv run plast-agent "Запити/Мандрівка гуртка Сокіл.md" --dry-run
 uv run plast-agent --chat
+uv run plast-agent --chat --local
 ```
 `--chat` lets the leader describe the hike in their own words in the terminal. The agent shows what it understood, asks only about what is missing (group, number of people and adults, days, start date, and optionally the region), re-asks on an empty answer, lets the leader correct it, saves the request as a note in `Запити/` (`vault_write`) and then plans as for any note. Ages decide the section (18+ or a group of adults → «старші», with everyone counted as a participant), and named places («на Говерлу, біля Петроса») are passed to `find_routes` as `places`. If no route passes all of them, the agent says so and offers routes through at least one.
+
+**Model chain.** Before a run the agent shows how many free OpenRouter requests are left today (`GET /api/v1/key`) and whether the local model is ready. It starts on OpenRouter. On HTTP 429, a timeout, a server error or a broken schema it switches to the local Ollama model, and after a 429 it remembers "quota used up until 00:00 UTC" (`.cache/`). With fewer than 4 requests left it starts locally. `--local` uses only the local model. The note and the final line say which model answered (e.g. `openrouter 2, ollama 2`). Ollama is called in `json_schema` mode, where the schema constrains decoding, because Ollama has no `tool_choice`.
 
 Model calls have hard deadlines (120 s for parsing and proposals, 45 s for the closing paragraph). OpenRouter keeps slow free-model connections alive, so an HTTP read timeout alone may never fire. If the closing paragraph times out, the agent writes a factual summary instead.
 The server can also be inspected with any MCP client, e.g. `npx @modelcontextprotocol/inspector` → Streamable HTTP → `http://127.0.0.1:8770/mcp`.

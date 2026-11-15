@@ -271,18 +271,90 @@ def test_chat_can_be_cancelled_without_writing_anything():
     assert code == 0 and obsidian.written == {}
 
 
-def test_model_deadline_gives_a_readable_error():
-    from plast_agent import llm as L
-    model = L.LLM.__new__(L.LLM)
-    model.model_name = "slow-model"
+# ------------------------------------------------------------------ model provider chain (OpenRouter -> Ollama)
+import httpx  # noqa: E402
+import openai  # noqa: E402
 
-    class Slow:
-        async def ainvoke(self, messages):
+from plast_agent import llm as L  # noqa: E402
+
+
+class FakeRunner:
+    def __init__(self, behaviour):
+        self.behaviour = behaviour
+
+    async def ainvoke(self, messages):
+        b = self.behaviour.pop(0) if isinstance(self.behaviour, list) else self.behaviour
+        if b == "slow":
             await asyncio.sleep(5)
+        if isinstance(b, Exception):
+            raise b
+        return b
 
+
+class FakeChat:
+    def __init__(self, behaviour):
+        self.behaviour, self.methods = behaviour, []
+
+    def with_structured_output(self, schema, method):
+        self.methods.append(method)
+        return FakeRunner(self.behaviour)
+
+
+def provider(name, behaviour, deadline=2):
+    chat = FakeChat(behaviour)
+    return L.Provider(name=name, model=f"{name}-model", chat=chat, quick=FakeRunner(behaviour),
+                      method="json_schema" if name == "ollama" else "function_calling",
+                      structured_deadline=deadline, text_deadline=deadline)
+
+
+def rate_limited():
+    return openai.RateLimitError("429", response=httpx.Response(429, request=httpx.Request("POST", "https://x")),
+                                 body=None)
+
+
+@pytest.fixture
+def quota_file(tmp_path, monkeypatch):
+    path = tmp_path / "quota.json"
+    monkeypatch.setattr(L, "QUOTA_FILE", path)
+    return path
+
+
+def test_quota_error_switches_to_ollama_and_is_remembered(quota_file):
+    ok = ParsedRequest(**PARSED)
+    cloud, local = provider("openrouter", rate_limited()), provider("ollama", ok)
+    model = L.LLM(providers=[cloud, local])
+    result = asyncio.run(model.structured(ParsedRequest, "s", "u"))
+    assert result.participants == 10
+    assert model.provider.name == "ollama" and len(model.switches) == 1
+    assert local.chat.methods == ["json_schema"]              # constrained decoding for Ollama
+    assert model.calls_by == {"openrouter/openrouter-model": 1, "ollama/ollama-model": 1}
+    assert quota_file.exists() and L.quota_exhausted_now()      # no knocking on OpenRouter until 02:00 Kyiv
+
+
+def test_slow_cloud_model_falls_back_too(quota_file):
+    model = L.LLM(providers=[provider("openrouter", "slow", deadline=0.1), provider("ollama", ParsedRequest(**PARSED))])
+    assert asyncio.run(model.structured(ParsedRequest, "s", "u")).days == 3
+    assert "не відповіла за" in model.switches[0] and not quota_file.exists()   # a timeout is not a quota
+
+
+def test_both_providers_down_gives_one_clear_error(quota_file):
+    model = L.LLM(providers=[provider("openrouter", rate_limited()),
+                             provider("ollama", openai.APIConnectionError(request=httpx.Request("POST", "https://x")))])
     with pytest.raises(L.LLMError) as e:
-        asyncio.run(model._deadline(Slow(), [], 0.1))
-    assert "не відповіла за" in str(e.value)
+        asyncio.run(model.structured(ParsedRequest, "s", "u"))
+    assert "Ollama не відповідає" in str(e.value)
+
+
+def test_start_with_fallback_skips_the_cloud(quota_file):
+    cloud, local = provider("openrouter", rate_limited()), provider("ollama", ParsedRequest(**PARSED))
+    model = L.LLM(providers=[cloud, local], start_with_fallback=True)
+    asyncio.run(model.structured(ParsedRequest, "s", "u"))
+    assert cloud.chat.methods == [] and model.model_name == "ollama/ollama-model"
+
+
+def test_quota_reset_is_midnight_utc():
+    from datetime import datetime, timezone
+    assert L.next_quota_reset(datetime(2026, 11, 15, 23, 30, tzinfo=timezone.utc)).isoformat() == "2026-11-16T00:00:00+00:00"
 
 
 def test_chat_with_two_adults_and_named_peaks_like_the_real_session():

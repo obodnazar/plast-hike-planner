@@ -198,4 +198,6 @@ def render_plan(state: dict[str, Any], request_path: str, model: str, generated_
     add("- Маршрути й точки: © OpenStreetMap contributors (ODbL); висоти: SRTM 30 м через OpenTopoData")
     add("- Погода: Open-Meteo (CC BY 4.0); норми: `data/rules.yaml` (джерела в research/plast-norms-research.md)")
     add(f"- Модель: `{model}`; згенеровано {generated_at}")
+    for sw in state.get("model_switches", []):
+        add(f"- ↪ {clean(sw, 300)}")
     return "\n".join(L) + "\n"

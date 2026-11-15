@@ -10,16 +10,20 @@ Every call is counted, because free models allow 50 requests a day.
 from __future__ import annotations
 
 import asyncio
+import json
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from datetime import date
 from typing import Any, Literal
 
+import httpx
 import openai
 from langchain_core.exceptions import OutputParserException
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
-from plast_agent.config import Settings
+from plast_agent.config import PROJECT_ROOT, Settings
 
 
 class Lenient(BaseModel):
@@ -103,67 +107,195 @@ def explain_llm(exc: BaseException, model: str) -> str:
     return f"Модель не дала коректної відповіді: {type(exc).__name__}: {str(exc)[:200]}"
 
 
-STRUCTURED_DEADLINE_S = 120   # parsing a note / proposing a plan
-TEXT_DEADLINE_S = 45          # the optional closing paragraph
+QUOTA_FILE = PROJECT_ROOT / ".cache" / "openrouter_quota.json"
+MIN_FREE_REQUESTS = 4   # a planning run needs about 3-6 model calls
+DIM, YELLOW, RESET = "\033[2m", "\033[33m", "\033[0m"
+
+
+@dataclass
+class Provider:
+    """One place a model can answer from. The agent tries them in order."""
+
+    name: str                 # "openrouter" | "ollama"
+    model: str
+    chat: Any                 # for structured answers
+    quick: Any                # for the short closing paragraph
+    method: str               # "function_calling" (OpenRouter) | "json_schema" (Ollama: constrained decoding)
+    structured_deadline: int  # seconds, wall clock
+    text_deadline: int
+
+    @property
+    def label(self) -> str:
+        return f"{self.name}/{self.model}"
+
+
+class ProviderFailed(RuntimeError):
+    """This provider cannot answer now (quota, timeout, down, broken schema twice); try the next one."""
+
+    def __init__(self, message: str, quota: bool = False) -> None:
+        super().__init__(message)
+        self.quota = quota
+
+
+def next_quota_reset(now: datetime | None = None) -> datetime:
+    """OpenRouter's free-model day ends at 00:00 UTC (02:00 Kyiv)."""
+    now = now or datetime.now(timezone.utc)
+    return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def quota_exhausted_now() -> bool:
+    try:
+        until = datetime.fromisoformat(json.loads(QUOTA_FILE.read_text())["exhausted_until"])
+    except (OSError, ValueError, KeyError):
+        return False
+    return datetime.now(timezone.utc) < until
+
+
+def remember_quota_exhausted() -> None:
+    QUOTA_FILE.parent.mkdir(exist_ok=True)
+    QUOTA_FILE.write_text(json.dumps({"exhausted_until": next_quota_reset().isoformat()}))
+
+
+def free_requests_left(settings: Settings) -> int | None:
+    """Today's remaining free-model requests on this OpenRouter key, or None if unknown."""
+    try:
+        r = httpx.get("https://openrouter.ai/api/v1/key", timeout=5,
+                      headers={"Authorization": f"Bearer {settings.openrouter_api_key}"})
+        return int(r.json()["data"]["free_model_daily_requests"]["remaining"])
+    except Exception:  # unknown is fine: the run then simply tries OpenRouter first
+        return None
+
+
+def ollama_status(settings: Settings) -> tuple[bool, str]:
+    """(usable, message). Usable = the Ollama server answers and the configured model is installed."""
+    root = settings.ollama_base_url.rstrip("/").removesuffix("/v1")
+    try:
+        tags = httpx.get(f"{root}/api/tags", timeout=3).json().get("models", [])
+    except Exception:
+        return False, "Ollama не запущена (відкрийте застосунок Ollama)."
+    names = {m["name"] for m in tags} | {m["name"].removesuffix(":latest") for m in tags}
+    if settings.ollama_model not in names:
+        return False, (f"Ollama працює, але моделі {settings.ollama_model} немає. Створіть її: "
+                       "ollama pull gemma4:12b && ollama create plast-gemma -f ollama/Modelfile")
+    return True, f"Ollama готова: {settings.ollama_model}"
+
+
+def build_providers(settings: Settings, with_ollama: bool) -> list[Provider]:
+    providers = [Provider(
+        name="openrouter", model=settings.openrouter_model,
+        chat=ChatOpenAI(model=settings.openrouter_model, api_key=settings.openrouter_api_key,
+                        base_url=settings.openrouter_base_url, temperature=0, timeout=75, max_retries=1,
+                        default_headers={"X-Title": "plast-hike-planner"}),
+        quick=ChatOpenAI(model=settings.openrouter_model, api_key=settings.openrouter_api_key,
+                         base_url=settings.openrouter_base_url, temperature=0, timeout=45, max_retries=0,
+                         default_headers={"X-Title": "plast-hike-planner"}),
+        method="function_calling", structured_deadline=120, text_deadline=45)]
+    if with_ollama:
+        local = dict(model=settings.ollama_model, api_key="ollama", base_url=settings.ollama_base_url,
+                     temperature=0, max_retries=0)
+        providers.append(Provider(
+            name="ollama", model=settings.ollama_model,
+            chat=ChatOpenAI(timeout=240, **local), quick=ChatOpenAI(timeout=90, **local),
+            # Ollama has no tool_choice: function_calling may return nothing. json_schema goes into
+            # Ollama's `format` and constrains decoding, so the answer is always valid JSON.
+            method="json_schema", structured_deadline=240, text_deadline=90))
+    return providers
+
+
+def describe_failure(exc: BaseException, p: Provider) -> ProviderFailed:
+    if p.name == "ollama":
+        if isinstance(exc, (openai.APIConnectionError, httpx.ConnectError)):
+            return ProviderFailed("Ollama не відповідає: чи запущений застосунок Ollama?")
+        if isinstance(exc, openai.NotFoundError):
+            return ProviderFailed(f"В Ollama немає моделі {p.model}: ollama create plast-gemma -f ollama/Modelfile")
+        return ProviderFailed(f"Ollama: {type(exc).__name__}: {str(exc)[:200]}")
+    return ProviderFailed(explain_llm(exc, p.model), quota=isinstance(exc, openai.RateLimitError))
 
 
 class LLM:
-    def __init__(self, settings: Settings) -> None:
-        self.model_name = settings.openrouter_model
-        self.chat = ChatOpenAI(
-            model=settings.openrouter_model,
-            api_key=settings.openrouter_api_key,
-            base_url=settings.openrouter_base_url,
-            temperature=0,
-            timeout=75,
-            max_retries=1,
-            default_headers={"X-Title": "plast-hike-planner"},
-        )
-        # The closing paragraph is optional: it gets a short leash, the plan never waits for it.
-        self.quick_chat = ChatOpenAI(
-            model=settings.openrouter_model, api_key=settings.openrouter_api_key,
-            base_url=settings.openrouter_base_url, temperature=0, timeout=45, max_retries=0,
-            default_headers={"X-Title": "plast-hike-planner"},
-        )
-        self.calls = 0
+    """Model calls with a provider chain: OpenRouter first, the local Ollama model when OpenRouter cannot answer."""
 
-    async def _deadline(self, runnable, messages, seconds: int):
+    def __init__(self, settings: Settings | None = None, providers: list[Provider] | None = None,
+                 start_with_fallback: bool = False) -> None:
+        self.providers = providers if providers is not None else build_providers(settings, settings.ollama_enabled)
+        self.active = 1 if start_with_fallback and len(self.providers) > 1 else 0
+        self.calls = 0
+        self.calls_by: dict[str, int] = {}
+        self.switches: list[str] = []
+
+    @property
+    def provider(self) -> Provider:
+        return self.providers[self.active]
+
+    @property
+    def model_name(self) -> str:
+        used = [p.label for p in self.providers if self.calls_by.get(p.label)]
+        return ", ".join(used) or self.provider.label
+
+    def _switch(self, reason: ProviderFailed) -> bool:
+        if reason.quota:
+            remember_quota_exhausted()
+        if self.active + 1 >= len(self.providers):
+            return False
+        self.active += 1
+        note = f"{reason} → перемикаюсь на {self.provider.label}"
+        self.switches.append(note)
+        print(f"    {YELLOW}↪ {note}{RESET}")
+        return True
+
+    def _count(self, p: Provider) -> None:
+        self.calls += 1
+        self.calls_by[p.label] = self.calls_by.get(p.label, 0) + 1
+
+    async def _deadline(self, p: Provider, runnable, messages, seconds: int):
         """A hard wall-clock limit. OpenRouter keeps slow free-model connections alive with whitespace,
         so the HTTP read timeout alone may never fire."""
         try:
             return await asyncio.wait_for(runnable.ainvoke(messages), timeout=seconds)
         except asyncio.TimeoutError as exc:
-            raise LLMError(f"Модель {self.model_name} не відповіла за {seconds} с. Спробуйте ще раз або вкажіть "
-                           "іншу модель в OPENROUTER_MODEL.") from exc
+            raise ProviderFailed(f"{p.label} не відповіла за {seconds} с") from exc
 
-    async def structured(self, schema: type[BaseModel], system: str, user: str) -> BaseModel:
-        """Ask for a typed answer; if it breaks the schema or comes back empty, retry once with the reason."""
-        runner = self.chat.with_structured_output(schema, method="function_calling")
+    async def _structured_once(self, p: Provider, schema: type[BaseModel], system: str, user: str) -> BaseModel:
+        runner = p.chat.with_structured_output(schema, method=p.method)
         messages = [("system", system), ("user", user)]
         last_problem = ""
-        for attempt in (1, 2):
-            self.calls += 1
+        for _ in (1, 2):  # one retry with the reason if the answer breaks the schema
+            self._count(p)
             try:
-                result = await self._deadline(runner, messages, STRUCTURED_DEADLINE_S)
+                result = await self._deadline(p, runner, messages, p.structured_deadline)
             except (ValidationError, OutputParserException) as exc:
                 last_problem = f"{type(exc).__name__}: {str(exc)[:300]}"
                 messages.append(("user", f"Your previous answer broke the schema: {last_problem}. "
-                                         "Answer again by calling the function; use JSON null for missing values."))
+                                         "Answer again following the schema; use JSON null for missing values."))
                 continue
-            except openai.OpenAIError as exc:
-                raise LLMError(explain_llm(exc, self.model_name)) from exc
-            if result is None:  # the model answered in prose instead of calling the schema
-                last_problem = "no function call in the answer"
-                messages.append(("user", "Answer by calling the function with the schema, not in prose."))
+            except ProviderFailed:
+                raise
+            except Exception as exc:
+                raise describe_failure(exc, p) from exc
+            if result is None:
+                last_problem = "no structured answer"
+                messages.append(("user", "Answer with the structured object only, not in prose."))
                 continue
             return result
-        raise LLMError(f"Модель {self.model_name} двічі не дала відповіді за схемою ({last_problem}).")
+        raise ProviderFailed(f"{p.label} двічі не дала відповіді за схемою ({last_problem})")
+
+    async def structured(self, schema: type[BaseModel], system: str, user: str) -> BaseModel:
+        """A typed answer from the first provider that can give one."""
+        while True:
+            try:
+                return await self._structured_once(self.provider, schema, system, user)
+            except ProviderFailed as exc:
+                if not self._switch(exc):
+                    raise LLMError(str(exc)) from exc
 
     async def text(self, system: str, user: str) -> str:
-        """Free text with a short deadline: callers must have a fallback."""
-        self.calls += 1
+        """Free text with a short deadline: callers must have a fallback. Uses the current provider only."""
+        p = self.provider
+        self._count(p)
         try:
-            msg = await self._deadline(self.quick_chat, [("system", system), ("user", user)], TEXT_DEADLINE_S)
+            msg = await self._deadline(p, p.quick, [("system", system), ("user", user)], p.text_deadline)
             return msg.content
-        except openai.OpenAIError as exc:
-            raise LLMError(explain_llm(exc, self.model_name)) from exc
+        except ProviderFailed as exc:
+            raise LLMError(str(exc)) from exc
+        except Exception as exc:
+            raise LLMError(str(describe_failure(exc, p))) from exc
