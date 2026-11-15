@@ -257,3 +257,10 @@ def test_group_km_limit_narrows_the_search():
     assert tight.daily_km_limit == 8
     assert all(x.length_km <= 16 for x in tight.routes)                       # 2 days × 8 km
     assert tight.excluded.get("too long for the days", 0) > loose.excluded.get("too long for the days", 0)
+
+
+
+def test_unknown_place_names_are_ignored_not_fatal():
+    r = find_routes("yunatstvo", 2, "chornohora", [], 5, None, ["mountain lake"])
+    assert r.routes, "an unknown name must not wipe out all routes"
+    assert any("were ignored" in n for n in r.notes)

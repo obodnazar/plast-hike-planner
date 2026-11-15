@@ -286,7 +286,11 @@ def build_graph(links: McpLinks, llm: LLM):
             result = await links.call("plast-trail", "find_routes", args)
         if not result["routes"]:
             raise AgentStop(f"Жоден маршрут не підходить. Причини: {result['excluded']}. {result['notes']}")
-        if any("passes all of" in n for n in result["notes"]):
+        if any("were ignored" in n for n in result["notes"]):
+            notes.append(f"Жодного з названих місць ({', '.join(r['places'])}) немає на маршрутах у даних; "
+                         "шукаю без них. Перевірте написання.")
+            print(f"    {YELLOW}{notes[-1]}{RESET}")
+        elif any("passes all of" in n for n in result["notes"]):
             notes.append(f"Жоден маршрут у даних не проходить через усі місця ({', '.join(r['places'])}); "
                          "показую маршрути хоча б через одне з них.")
             print(f"    {YELLOW}{notes[-1]}{RESET}")

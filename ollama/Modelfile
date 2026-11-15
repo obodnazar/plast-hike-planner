@@ -1,8 +1,10 @@
-# The local fallback model for plast-hike-planner, built on Gemma 4 12B.
-#   ollama pull gemma4:12b
+# The local fallback model for plast-hike-planner, built on Gemma 4 E4B (about 4B effective parameters).
+#   ollama pull gemma4:e4b
 #   ollama create plast-gemma -f ollama/Modelfile
+# Chosen for a 16 GB Mac: gemma4:12b gave good answers but did not fit next to the usual apps and swapped
+# (2-10+ minutes per request). For 24 GB+ machines see Modelfile.12b.
 # num_ctx: Ollama's default context here is 4096 and longer prompts are cut silently from the start
 # (system prompt included); the agent's prompts need up to ~6000 tokens.
-FROM gemma4:12b
+FROM gemma4:e4b
 PARAMETER num_ctx 8192
 PARAMETER temperature 0

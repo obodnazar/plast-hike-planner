@@ -176,7 +176,7 @@ def ollama_status(settings: Settings) -> tuple[bool, str]:
     names = {m["name"] for m in tags} | {m["name"].removesuffix(":latest") for m in tags}
     if settings.ollama_model not in names:
         return False, (f"Ollama працює, але моделі {settings.ollama_model} немає. Створіть її: "
-                       "ollama pull gemma4:12b && ollama create plast-gemma -f ollama/Modelfile")
+                       "ollama pull gemma4:e4b && ollama create plast-gemma -f ollama/Modelfile")
     return True, f"Ollama готова: {settings.ollama_model}"
 
 

@@ -88,10 +88,11 @@ cp .env.example .env         # then fill in OPENROUTER_API_KEY and OBSIDIAN_API_
 4. Check the connection: `uv run check-obsidian` (lists 20 tools and reads one note).
 5. Optional, recommended: a local fallback model for when the free OpenRouter quota (50 requests/day) runs out. Install [Ollama](https://ollama.com) (tested with 0.40.16), then:
    ```bash
-   ollama pull gemma4:12b
+   ollama pull gemma4:e4b
    ollama create plast-gemma -f ollama/Modelfile
    ```
    The Modelfile raises the context to 8192 tokens (Ollama's default 4096 silently cuts long prompts) and sets temperature 0.
+   Measured on a 16 GB M4: `gemma4:e4b` parses a request in 14–29 s and a full run takes ~80 s, but it misreads more often than the cloud model. `gemma4:12b` (`ollama/Modelfile.12b`) reads better but did not fit next to the usual apps and swapped (2–10+ min per request); use it on 24 GB+ machines.
 
 | Variable (`.env`) | Default | Meaning |
 |---|---|---|

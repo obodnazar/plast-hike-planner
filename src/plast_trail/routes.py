@@ -88,13 +88,19 @@ def find_routes(section: str, days: int, region: str | None, must_include: list[
                 places: list[str] | None = None) -> FindRoutesResult:
     routes = load_routes()
     places = [p for p in (places or []) if place_stems(p)]
+    note = ""
     if places:  # named places: all of them if any route allows it, otherwise at least one
         full = [r for r in routes.values() if len(matched_places(r, places)) == len(places)]
         if not full:
             partial = {k: r for k, r in routes.items() if matched_places(r, places)}
-            note = (f"No route in the dataset passes all of: {', '.join(places)}. Showing routes that pass "
-                    "at least one of them; tell the user.")
-            routes = partial
+            if partial:
+                note = (f"No route in the dataset passes all of: {', '.join(places)}. Showing routes that pass "
+                        "at least one of them; tell the user.")
+                routes = partial
+            else:  # none of the names is on any route: do not drop everything, say so
+                note = (f"None of the named places ({', '.join(places)}) is on any route in the dataset; "
+                        "they were ignored. Tell the user and check the spelling.")
+                places = []
         else:
             note = ""
             routes = {r["id"]: r for r in full}
@@ -103,7 +109,7 @@ def find_routes(section: str, days: int, region: str | None, must_include: list[
         hard = min(hard, group_max_km_per_day) if hard else group_max_km_per_day
         target = min(target, group_max_km_per_day)
     excluded: dict[str, int] = {}
-    notes: list[str] = [note] if places and note else []
+    notes: list[str] = [note] if note else []
 
     max_days = section_rule(section, "max_days")
     if max_days["value"] and days > max_days["value"]:
