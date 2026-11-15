@@ -263,4 +263,55 @@ def test_group_km_limit_narrows_the_search():
 def test_unknown_place_names_are_ignored_not_fatal():
     r = find_routes("yunatstvo", 2, "chornohora", [], 5, None, ["mountain lake"])
     assert r.routes, "an unknown name must not wipe out all routes"
-    assert any("were ignored" in n for n in r.notes)
+    assert any("not a known place name" in n for n in r.notes)
+
+
+def test_a_place_on_no_route_ranks_routes_by_distance():
+    # the leader's test of 15 Nov: «бребенеско» is on no route, so the plan went to Кукул far away
+    r = find_routes("yunatstvo", 2, "chornohora", [], 4, None, ["Бребенеско"])
+    assert r.routes and all("Бребенескул" in x.distance_to_places_km for x in r.routes)
+    assert all(x.distance_to_places_km["Бребенескул"] < 8 for x in r.routes)
+    assert any("No route in the dataset passes Бребенескул" in n for n in r.notes)
+
+
+# ------------------------------------------------------------------ resolve_places (gazetteer)
+from plast_trail.places import resolve_places  # noqa: E402
+
+
+def _one(name: str, region: str | None = None):
+    return resolve_places([name], region).results[0]
+
+
+def test_misspelt_names_are_corrected():
+    r = _one("піпівана")                              # the leader's real request, 15 Nov
+    assert r.status == "corrected" and r.best.name == "Піп Іван Чорногірський"
+    assert r.best.region.value == "chornohora" and r.best.on_routes >= 1
+    assert _one("Піпіван").best.name == "Піп Іван Чорногірський"
+
+
+def test_case_forms_and_prefixes_are_found_as_written():
+    assert _one("Говерлу").status == "found" and _one("Говерлу").best.name == "Говерла"
+    assert _one("озеро Несамовите").best.name == "Несамовите озеро"
+    assert _one("петроса").best.name == "Петрос"                       # Chornohora's, the highest of three
+
+
+def test_region_decides_between_namesakes():
+    assert _one("Петрос", "marmarosy").best.name == "Петрос Мармароський"
+    assert {a.name for a in _one("Петрос").alternatives} >= {"Петрос Мармароський", "Петрос Ґорґанський"}
+
+
+def test_known_place_on_no_route_is_said_and_unknown_is_not_an_error():
+    r = _one("бребенеско")
+    assert r.best.name == "Бребенескул" and r.best.on_routes == 0   # the data gap the leader hit: on no route
+    assert _one("mountain lake").status == "not_found"
+
+
+def test_a_plan_that_ends_on_a_summit_is_warned():
+    # the leader's run of 16 Nov: «Лазещина-Говерла» ends high, the descent was nowhere in the plan
+    v = validate_hike_plan("r8613461", "senior", 3, 0, ["w13"], date(2026, 11, 28), None, None)
+    top = [x for x in v.violations if x.code == "ENDS_ON_TOP"]
+    assert top and top[0].severity.value == "warning" and top[0].day == 2
+    assert "about" in top[0].suggestion and "h with rests" in top[0].suggestion
+    assert v.valid                                   # a warning, the plan stays valid
+    v = validate_hike_plan(ROUTE, "yunatstvo", 10, 2, ["w30", "w56"], None, None, None)
+    assert "ENDS_ON_TOP" not in [x.code for x in v.violations]   # ends in Ясіня, a village

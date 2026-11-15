@@ -21,6 +21,10 @@
 
 Snapshot in the committed file: OSM `2026-11-14T19:08:36Z`, 121 routes (skipped: 25 out of length range, 10 unnamed, 4 broken chains), 3039 points of interest.
 
+## The place gazetteer
+
+`uv run python scripts/build_places.py` (seconds, offline) reads the same cached Overpass responses (`data/raw/pois.json`, `data/raw/places.json`) and writes `data/places.json`: 1494 named places (610 peaks, 41 lakes, 151 springs, 125 huts, 19 shelters, 76 campsites, 183 villages and towns, 289 polonyny and urochyshcha). Only Cyrillic names are kept, generic ones («Джерело», «Колиба») are dropped, the same name and kind within 1 km is one place, and each place gets a region by the routes' nearest-centre rule. `resolve_places` counts the routes through a place at run time with find_routes' own matching. © OpenStreetMap contributors (ODbL).
+
 ## Weather fixtures and replay
 
 `assess_weather_risk` has three modes, chosen with `WEATHER_MODE` when starting the server:

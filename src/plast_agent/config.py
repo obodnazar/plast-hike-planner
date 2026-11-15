@@ -31,6 +31,7 @@ class Settings:
     ollama_base_url: str = "http://localhost:11434/v1"
     ollama_model: str = "plast-gemma"
     ollama_enabled: bool = True
+    obsidian_leaflet: str = "0"   # 1 = the Obsidian Leaflet plugin is installed: add an interactive map to plans
 
 
 def _env(name: str, default: str = "") -> str:
@@ -77,4 +78,5 @@ def load_settings(*, need_model: bool = True) -> Settings:
         ollama_base_url=_env("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
         ollama_model=_env("OLLAMA_MODEL", "plast-gemma"),
         ollama_enabled=_env("OLLAMA_FALLBACK", "1").lower() not in ("0", "false", "no", "off"),
+        obsidian_leaflet=_env("OBSIDIAN_LEAFLET", "0").lower(),
     )

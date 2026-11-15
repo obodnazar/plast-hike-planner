@@ -51,9 +51,11 @@ The model only chooses; every number comes from a tool. Details: [docs/design-ra
 | Tool | What it does |
 |---|---|
 | `find_routes` | Routes that fit the section, days, region and wishes; ranked; with the night spots allowed for the section (the one retrieval tool) |
+| `resolve_places` | Place names as people write them («піпівана», «на Говерлу») → the named place in a gazetteer of 1494 OSM peaks, lakes, villages and polonyny: found / corrected / ambiguous / not_found, region, height, how many routes pass it |
 | `validate_hike_plan` | Splits the route into days at the chosen night spots and computes km, ascent, walking time and arrival vs sunset. Checks Plast rules and the group's limits; every violation has a concrete fix |
 | `assess_weather_risk` | Open-Meteo forecast at the route's highest point turned into per-day risk (thunderstorm, snow, wind, rain, night cold) with recommendations; live / replay (fixtures are recorded by a separate script) |
 | `calculate_supplies` | Food, water, gas, tents, stoves, pots, first-aid kits, pack weight vs the section's limit; every coefficient with its source |
+| `get_route_profile` | The plan's shape for a picture: each day's elevation profile with coordinates, climb, drop and steep km, plus landmarks. The agent draws from it the route picture (map sketch + profile coloured by steepness) embedded in the Obsidian plan note, a GPX track and Mapy.com links (real outdoor map with an elevation profile) |
 
 Full contracts (exact descriptions, input/output schemas, errors, side effects, real examples): **[docs/tool-contracts.md](docs/tool-contracts.md)**.
 Obsidian tools used and their contracts: **[docs/obsidian-contract.md](docs/obsidian-contract.md)**.
@@ -67,6 +69,7 @@ Obsidian tools used and their contracts: **[docs/obsidian-contract.md](docs/obsi
 | [docs/design-rationale.md](docs/design-rationale.md) | Why Obsidian, why each tool is an MCP tool, how the tools support the workflow, trade-offs, limitations |
 | [docs/data-and-replay.md](docs/data-and-replay.md) | Data sources and licences, how the dataset is built, fixtures and replay mode, rate limits, secrets |
 | [docs/demo-script.md](docs/demo-script.md) | Defence script and checklist (Ukrainian) |
+| [eval/](eval/README.md) | How well the agent understands free-text requests: 60 labelled requests (dev + held-out test), per-field scores per model, results in [eval/RESULTS.md](eval/RESULTS.md) |
 | [research/](research/) | Research behind the Plast rules (51 sources) and the approval sheet |
 
 ## Prerequisites
@@ -103,6 +106,7 @@ cp .env.example .env         # then fill in OPENROUTER_API_KEY and OBSIDIAN_API_
 | `OBSIDIAN_CA_CERT` | `certs/obsidian-local-rest-api.crt` | used to verify TLS (not disabled) |
 | `PLAST_TRAIL_HOST` / `PLAST_TRAIL_PORT` | `127.0.0.1` / `8770` | where the custom server listens |
 | `OLLAMA_FALLBACK` / `OLLAMA_MODEL` / `OLLAMA_BASE_URL` | `1` / `plast-gemma` / `http://localhost:11434/v1` | local fallback model |
+| `OBSIDIAN_LEAFLET` | `0` | `1` when the Obsidian Leaflet community plugin is installed: plan notes get an interactive topographic map with the track |
 | `WEATHER_MODE` | `replay` | `replay` (recorded forecasts, no network) or `live`; fixtures are recorded with `scripts/record_weather.py` |
 
 ## Run: two independent processes
@@ -134,15 +138,19 @@ Details and rate limits: [docs/data-and-replay.md](docs/data-and-replay.md).
 
 ## Checks
 ```bash
-uv run pytest -q                          # 39 tests: domain logic, schemas over in-memory MCP, the agent workflow (no network)
+uv run pytest -q                          # 123 tests: domain logic, schemas over in-memory MCP, the agent, request understanding, the evaluation (no network)
 uv run python scripts/smoke_server.py     # all 4 tools over real MCP, incl. error cases and an empty result
 uv run check-obsidian                     # Obsidian discovery + one vault_read
-uv run python scripts/reset_demo.py       # clean the demo vault before a rehearsal
+uv run python scripts/reset_demo.py       # clean the demo vault before a rehearsal (plans, pictures, tracks)
+uv run python scripts/offline_check.py "Запити/<request>.md"   # a run with no internet + the local model, every output checked
+# what to check by hand (Obsidian, browser, phone): docs/manual-tests.md
+uv run python scripts/eval_parsing.py --provider ollama --set all   # request-understanding scores (eval/README.md)
 ```
 
 ## Data
 ```bash
 uv run python scripts/build_dataset.py    # rebuild data/routes.json from OSM + SRTM (raw downloads cached in data/raw/)
+uv run python scripts/build_places.py     # rebuild data/places.json (the gazetteer) from the same cached OSM data
 uv run python scripts/gen_docs.py         # regenerate the contract docs from the live servers
 ```
 Routes and points of interest © OpenStreetMap contributors (ODbL). Heights: SRTM 30 m (public domain) via OpenTopoData. Weather: Open-Meteo (CC BY 4.0).
@@ -153,11 +161,12 @@ Never committed (all in `.gitignore`): `.env`, `certs/`, `demo-vault/.obsidian/`
 ## Layout
 ```
 src/plast_trail/   custom MCP server: server.py (tools), routes.py, validation.py, weather.py, supplies.py, models.py, data.py, errors.py
-src/plast_agent/   agent: cli.py, workflow.py (LangGraph), llm.py, mcp_links.py (MCP client), render.py, config.py, check_obsidian.py
-data/              routes.json (121 routes) · rules.yaml (DRAFT norms with sources)
+src/plast_agent/   agent: cli.py, workflow.py (LangGraph), llm.py, mcp_links.py (MCP client), render.py, picture.py (route SVG), config.py, chat.py, evaluation.py, check_obsidian.py
+data/              routes.json (121 routes) · places.json (1494 named places) · rules.yaml (DRAFT norms with sources)
 fixtures/          recorded Open-Meteo responses (replay)
-scripts/           build_dataset, record_weather, smoke_server, smoke_model, gen_docs, reset_demo
+scripts/           build_dataset, build_places, record_weather, smoke_server, smoke_model, gen_docs, reset_demo, eval_parsing, offline_check
 tests/             pytest
+eval/              labelled requests (dev / test) and scored runs of request understanding
 docs/              contracts, rationale, data/replay, demo script
 demo-vault/        Obsidian demo vault: Запити/ (requests), Плани/ (agent output)
 ```

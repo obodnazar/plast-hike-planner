@@ -43,6 +43,8 @@ async def main() -> None:
                 out = list((t.outputSchema or {}).get("properties", {}))
                 print(f"  - {t.name}: in(required)={req} | out={out[:6]}{'...' if len(out) > 6 else ''}")
 
+            show("resolve_places (misspelt names)", await s.call_tool("resolve_places", {
+                "names": ["піпівана", "бребенеско", "mountain lake"]}))
             r = await s.call_tool("find_routes", {"section": "yunatstvo", "days": 2, "region": "chornohora",
                                                   "must_include": ["lake"], "max_results": 3})
             found = show("find_routes(yunatstvo, 2 days, chornohora, lake)", r)

@@ -40,6 +40,11 @@ MIN_DAY_KM = 1.0  # a night spot closer than this to the start or finish would m
 
 
 # ------------------------------------------------------------------ time helpers
+# A route that ends this high and near its top ends on a summit or ridge: the descent is not planned.
+ENDS_HIGH_M = 1300
+ENDS_NEAR_TOP_M = 60
+
+
 def parse_hhmm(value: str) -> int:
     """'08:30' -> minutes after midnight."""
     try:
@@ -331,6 +336,26 @@ def validate_hike_plan(route_id: str, section: str, participants: int, adults: i
     if start_min < parse_hhmm(common_rule("earliest_start")["value"]):
         add("START_TOO_EARLY", "warning", None, f"Start at {fmt_hhmm(start_min)} is before the earliest allowed.",
             common_rule("earliest_start")["value"], fmt_hhmm(start_min), common_rule("earliest_start")["source"])
+
+    # ---- the end of the route: routes are planned one way, so some end on a summit or a ridge
+    finish = route["waypoints"][-1]
+    last = days[-1]
+    top_at_end = finish["elevation_m"] if finish["elevation_m"] is not None else last.max_elevation_m
+    if top_at_end >= ENDS_HIGH_M and top_at_end >= route["max_elevation_m"] - ENDS_NEAR_TOP_M:
+        back = stops[-2]
+        pace = load_rules()["pace"]["flat_km_per_hour"]["value"]
+        back_h = round(last.km / pace * (1 + common_rule("break_share")["value"]), 1)
+        back_at = parse_hhmm(last.est_arrival) + back_h * 60
+        late = ""
+        if last.sunset:
+            margin = common_rule("arrive_hours_before_sunset")["value"] * 60
+            if back_at > parse_hhmm(last.sunset) - margin:
+                late = f" Back at about {fmt_hhmm(back_at)}, later than {margin / 60:g} h before sunset {last.sunset}."
+        add("ENDS_ON_TOP", "warning", len(days),
+            f"The route ends high, at {finish['name'] or 'its end'} ({top_at_end} m); the way down is not in the plan.",
+            ENDS_HIGH_M, top_at_end, "plast-trail: the dataset plans every route one way",
+            f"Plan the descent: back the same way to {back['name'] or back['id']} is {last.km:g} km, about "
+            f"{back_h:g} h with rests.{late} Or choose a route that ends in a village.")
 
     docs = list(load_rules()["documents"]["all"])
     if section != "senior":

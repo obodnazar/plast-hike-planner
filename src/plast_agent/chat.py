@@ -2,6 +2,7 @@
 
 The agent shows what it understood, asks about what is missing, lets the leader correct it,
 saves the request as a note in Obsidian (vault_write) and then plans exactly as for a note.
+The model reads the description once; the answers to the questions are read by code.
 
     uv run plast-agent --chat
 """
@@ -10,13 +11,15 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime
-from typing import Awaitable, Callable
+from datetime import date, datetime
+from typing import Any, Awaitable, Callable
 
 from plast_agent.llm import LLM
 from plast_agent.mcp_links import McpLinks
 from plast_agent.render import request_lines
-from plast_agent.workflow import MISSING_UA, understand
+from plast_agent.understanding import (dont_care, group_consistency, next_weekday, norm, parse_count, parse_date,
+                                       parse_days, regions_named)
+from plast_agent.workflow import MISSING_UA, resolve_named_places, understand
 
 BOLD, CYAN, YELLOW, RESET = "\033[1m", "\033[36m", "\033[33m", "\033[0m"
 
@@ -85,38 +88,102 @@ def safe_title(text: str) -> str:
     return re.sub(r'[\\/:*?"<>|#^\[\]]', "", text).strip()[:80]
 
 
-async def chat(links: McpLinks, llm: LLM, ask: Ask = terminal_ask) -> tuple[str, dict, list[str]] | None:
-    """Run the dialogue. Returns (vault path of the saved request, parsed request, notes) or None if cancelled."""
+DEFAULT_DAYS = 2
+THINKING = f"\n{CYAN}Думаю над запитом… (безкоштовна модель може думати до хвилини){RESET}"
+
+
+def parse_answer(key: str, answer: str, today: date) -> tuple[Any, str | None, dict[str, Any]]:
+    """A short answer -> (value, note for the leader, other fields to set), by code: no model call.
+    value None = the code could not read it (then the model re-reads the whole text)."""
+    if key == "section":
+        return guess_section(answer), None, {}
+    if key in ("participants", "adults"):
+        n = parse_count(answer)
+        if n is None and key == "adults" and norm(answer).strip(" .!") in ("я", "тільки я", "лише я", "я сам", "я сама"):
+            n = 1
+        return n, None, {}
+    if key == "days":
+        n = parse_days(answer) or parse_count(answer)
+        if n and 1 <= n <= 7:
+            return n, None, {}
+        if dont_care(answer):
+            return DEFAULT_DAYS, (f"Днів: {DEFAULT_DAYS} — моє припущення (ви написали, що не важливо); "
+                                  "змініть, якщо треба."), {}
+        return None, None, {}
+    found = parse_date(answer, today)   # key == "start_date"
+    if found and found >= today:
+        return found.isoformat(), None, {}
+    if dont_care(answer):
+        saturday = next_weekday(today, 5)
+        return saturday.isoformat(), (f"Старт: {saturday:%d.%m} (найближча субота) — моє припущення; "
+                                      "агент може зсунути його до 3 днів, якщо погода погана."), {"date_flexibility_days": 3}
+    return None, None, {}
+
+
+async def chat(links: McpLinks, llm: LLM, ask: Ask = terminal_ask,
+               today: date | None = None) -> tuple[str, dict, list[str]] | None:
+    """Run the dialogue. Returns (vault path of the saved request, parsed request, notes) or None if cancelled.
+    The model reads the description once; short answers are read by code (understanding.parse_*), so a
+    question costs no model request. The model re-reads only an answer the code cannot read, or a correction."""
+    today = today or date.today()
+
+    async def read(text: str) -> tuple[dict, list[str]]:   # the model reads; plast-trail checks the place names
+        request, notes, _ = await understand(llm, text, today)
+        return request, notes + await resolve_named_places(links, request, text)
+
     text = await read_description(ask)
-    asked_optional: set[str] = set()
+    print(THINKING)
+    request, notes = await read(text)
+    asked_region = False
     for _ in range(MAX_ROUNDS):
-        print(f"\n{CYAN}Думаю над запитом… (безкоштовна модель може думати до хвилини){RESET}")
-        request, notes, missing = await understand(llm, text)
-        answers = []
-        section = request.get("section")
-        for key in missing:  # one question at a time, the group first (it changes the next questions)
-            if key == "adults" and section == "senior":
+        answers, unread = [], False
+        for key in MISSING_UA:  # one question at a time, the group first (it changes the next questions)
+            if request.get(key) is not None:
+                continue
+            if key == "adults" and request.get("section") == "senior":
+                request["adults"] = 0
                 answers.append("- Дорослих супровідників: 0 (група дорослих)")
                 continue
-            question = QUESTIONS_SENIOR.get(key, QUESTIONS[key]) if section == "senior" else QUESTIONS[key]
+            question = QUESTIONS_SENIOR.get(key, QUESTIONS[key]) if request.get("section") == "senior" else QUESTIONS[key]
             answer = await ask_required(ask, question)
             if not answer:
                 continue
-            if key == "section":
-                section = guess_section(answer) or section
             answers.append(f"- {LABELS[key]}: {answer}")
-        for key, question in OPTIONAL.items():
-            if request.get(key) is None and key not in asked_optional and not missing:
-                asked_optional.add(key)
-                answer = await ask(f"{YELLOW}? {question}{RESET} ")
-                if answer:
-                    answers.append(f"- Район: {answer}")
-        if missing and not answers:
-            print("  Без цих даних план не скласти. Почніть, будь ласка, спочатку.")
-            return None
+            value, note, extra = parse_answer(key, answer, today)
+            if value is None:
+                if dont_care(answer):  # the group and the people cannot be assumed: the safety rules need them
+                    print("  Це потрібно для перевірки норм безпеки — напишіть, будь ласка, число або вік.")
+                else:
+                    unread = True
+                continue
+            request[key] = value
+            request.update(extra)
+            if note:
+                notes.append(note)
+            if key != "start_date" and request.get("start_date") is None:   # «не важливо, хочемо вийти 19 листопада»
+                found = parse_date(answer, today)
+                if found and found >= today:
+                    request["start_date"] = found.isoformat()
         if answers:
             text += "\n\nУточнення:\n" + "\n".join(answers)
+        if unread:
+            print(f"{THINKING}\n  (перечитую запит разом з уточненнями)")
+            request, notes = await read(text)
             continue
+        notes += group_consistency(request, text)
+        if any(request.get(k) is None for k in MISSING_UA):
+            if not answers:
+                print("  Без цих даних план не скласти. Почніть, будь ласка, спочатку.")
+                return None
+            continue
+        if request.get("region") is None and not request.get("places") and not asked_region:
+            asked_region = True   # optional, and not needed when the leader named places
+            answer = await ask(f"{YELLOW}? {OPTIONAL['region']}{RESET} ")
+            if answer:
+                text += f"\n\nУточнення:\n- Район: {answer}"
+                named = regions_named(answer)
+                if len(named) == 1:
+                    request["region"] = named.pop()
         print(f"\n{BOLD}Ось що я зрозумів:{RESET}")
         for line in request_lines(request, notes):
             print("  " + line)
@@ -127,6 +194,8 @@ async def chat(links: McpLinks, llm: LLM, ask: Ask = terminal_ask) -> tuple[str,
             print("Скасовано. Нічого не записано.")
             return None
         text += f"\n\nВиправлення: {reply}"
+        print(THINKING)
+        request, notes = await read(text)
     else:
         print("Не вдалося зібрати всі дані за кілька уточнень; почніть, будь ласка, спочатку.")
         return None

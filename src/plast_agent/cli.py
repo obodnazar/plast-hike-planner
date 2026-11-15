@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import sys
 import time
 import traceback
@@ -23,6 +24,7 @@ from plast_agent.chat import chat
 from plast_agent import llm as llm_mod
 from plast_agent.llm import LLM, LLMError
 from plast_agent.mcp_links import ConnectionFailure, McpCallError, McpLinks, _leaves, explain_connection
+from plast_agent.picture import route_gpx, route_svg
 from plast_agent.render import render_plan
 from plast_agent.workflow import AgentStop, build_graph, now_kyiv
 
@@ -52,6 +54,13 @@ def make_llm(settings, local: bool = False) -> LLM:
     return LLM(providers=llm_mod.build_providers(settings, usable), start_with_fallback=low and usable)
 
 
+def leaflet_enabled(settings) -> bool:
+    """OBSIDIAN_LEAFLET=1 in .env: the Obsidian Leaflet plugin is installed, so the plan gets an interactive map.
+    The agent cannot find this out itself: the REST API may not read .obsidian/, and the plugin adds no commands
+    to command_list (checked with Leaflet 6.0.5)."""
+    return (getattr(settings, "obsidian_leaflet", "0") if settings else "0") in ("1", "true", "yes", "on")
+
+
 async def plan_and_write(links: McpLinks, settings, request_path: str | None, dry_run: bool, llm=None,
                          chat_mode: bool = False, ask=None, local: bool = False) -> int:
     """Everything after both servers are connected. Catches its own errors and returns an exit code."""
@@ -70,6 +79,7 @@ async def plan_and_write(links: McpLinks, settings, request_path: str | None, dr
                 return 0
             request_path, request, notes = got
             start = {"request_path": request_path, "request": request, "search_notes": notes}
+        planning_started = time.monotonic()   # the dialogue (the leader typing) is not the agent's time
         state = await graph.ainvoke(start, {"recursion_limit": 80})
     except Exception as exc:  # every failure is explained here, inside both MCP connections
         links.reported = True
@@ -87,13 +97,33 @@ async def plan_and_write(links: McpLinks, settings, request_path: str | None, dr
             traceback.print_exception(leaf, file=sys.stderr)
         return 1
 
-    note = render_plan({**state, "model_switches": getattr(llm, "switches", [])}, request_path, llm.model_name, now_kyiv())
     plan_path = f"Плани/{Path(request_path).stem} — план.md"
+    picture = route_svg(state["route_profile"], state.get("validation") or {},
+                        (state.get("proposal") or {}).get("start_date"),
+                        (state.get("request") or {}).get("place_points")) if state.get("route_profile") else ""
+    picture_path = f"Плани/{Path(request_path).stem} — маршрут.svg" if picture else ""
+    gpx = route_gpx(state["route_profile"], (state.get("request") or {}).get("place_points"),
+                    Path(request_path).stem) if picture else ""
+    gpx_path = f"Плани/{Path(request_path).stem} — маршрут.gpx" if gpx else ""
+    leaflet = leaflet_enabled(settings) and bool(gpx)
+    note = render_plan({**state, "model_switches": getattr(llm, "switches", []), "picture_path": picture_path,
+                        "gpx_path": gpx_path, "leaflet": leaflet,
+                        "leaflet_id": "plast-" + hashlib.sha1(request_path.encode()).hexdigest()[:10]},
+                       request_path, llm.model_name, now_kyiv())
     print(f"\n{BOLD}━━ 9. Записую план в Obsidian: {plan_path}{RESET}")
     if dry_run:
         print("  (dry run: нічого не записано)")
+        if picture:
+            local = PROJECT_ROOT / "out" / Path(picture_path).name
+            local.parent.mkdir(exist_ok=True)
+            local.write_text(picture, encoding="utf-8")
+            local.with_suffix(".gpx").write_text(gpx, encoding="utf-8")
+            print(f"  малюнок і трек маршруту для перегляду: {local} (.gpx поруч)")
     else:
         try:
+            if picture:   # the picture and the track first: the note links to them
+                await links.call("obsidian", "vault_write", {"path": picture_path, "content": picture})
+                await links.call("obsidian", "vault_write", {"path": gpx_path, "content": gpx})
             await links.call("obsidian", "vault_write", {"path": plan_path, "content": note})
             await links.call("obsidian", "vault_append", {
                 "path": request_path,
@@ -107,11 +137,13 @@ async def plan_and_write(links: McpLinks, settings, request_path: str | None, dr
             print(f"  {RED}✗ Obsidian недоступний при записі ({exc}).{RESET}\n  План збережено локально: {backup}")
             return 1
 
-    colour = {"ok": GREEN, "attention": YELLOW, "risky": YELLOW}.get(state.get("status"), RED)
+    colour = {"ok": GREEN, "attention": YELLOW, "risky": YELLOW, "group": YELLOW}.get(state.get("status"), RED)
     print(f"\n{colour}{BOLD}Готово: {state.get('status')}{RESET} · спроб плану: {len(state.get('attempts', []))} · "
           f"виклики LLM: {llm.calls} ({', '.join(f'{k} {v}' for k, v in getattr(llm, 'calls_by', {}).items())}) · "
-          f"виклики MCP: {links.calls} · {time.monotonic() - started:.0f} с")
-    return 0 if state.get("status") in ("ok", "attention", "risky") else 1
+          f"виклики MCP: {links.calls} · "
+          + (f"діалог {planning_started - started:.0f} с, планування {time.monotonic() - planning_started:.0f} с"
+             if chat_mode else f"{time.monotonic() - started:.0f} с"))
+    return 0 if state.get("status") in ("ok", "attention", "risky", "group") else 1
 
 
 async def run(request_path: str | None, list_only: bool, dry_run: bool, chat_mode: bool = False,

@@ -20,6 +20,7 @@ any tool call. If attempts run out, the best valid plan found so far is kept.
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime, timedelta
 from typing import Any, TypedDict
 
@@ -27,6 +28,8 @@ from langgraph.graph import END, START, StateGraph
 
 from plast_agent.llm import LLM, ParsedRequest, Proposal
 from plast_agent.mcp_links import McpCallError, McpLinks
+from plast_agent.render import violation_ua
+from plast_agent.understanding import REGION_UA, group_consistency, place_candidates, refine
 
 MAX_ATTEMPTS = 4
 BOLD, YELLOW, RESET = "\033[1m", "\033[33m", "\033[0m"
@@ -49,8 +52,9 @@ class State(TypedDict, total=False):
     supplies: dict[str, Any]
     proposal_ok: bool
     best: dict[str, Any]  # best valid plan so far: {proposal, validation, weather}
-    status: str           # ok | attention | risky | failed
+    status: str           # ok | attention | risky | group (only the group breaks the rules) | failed
     conclusion: str
+    route_profile: dict[str, Any]   # get_route_profile of the final plan, for the picture in the note
 
 
 def step(title: str) -> None:
@@ -86,6 +90,8 @@ If feedback from earlier attempts is given, fix exactly what it says:
 - for rule violations, apply the suggested waypoint ids;
 - weather depends on the dates and the route, hardly on night spots. After a HIGH weather result,
   use the date probes in the feedback: move start_date to a date whose risk is not high, or pick another route.
+If the leader named a place that no route passes, prefer the route that comes closest to it ("comes within").
+Do not state what Plast rules allow or require: the tools check the rules.
 Never repeat a rejected route + start_date pair: {rejected}.
 Write `reasoning` in Ukrainian, 1-2 sentences."""
 
@@ -94,6 +100,8 @@ def candidates_text(search: dict[str, Any]) -> str:
     lines = []
     for r in search["routes"]:
         passes = f" | passes {', '.join(r['places_matched'])}" if r.get("places_matched") else ""
+        passes += "".join(f" | comes within {d:g} km of {n} (no route passes it)"
+                          for n, d in (r.get("distance_to_places_km") or {}).items())
         lines.append(f"ROUTE {r['id']}: {r['name']} | {r['length_km']} km, +{r['ascent_m']} m, max "
                      f"{r['max_elevation_m']} m | {r['start']} -> {r['finish']} | avg {r['avg_km_per_day']} km/day{passes}")
         for o in r["overnight_options"]:
@@ -115,6 +123,17 @@ def feedback_text(attempts: list[dict[str, Any]]) -> str:
 
 
 RISK_ORDER = {"low": 0, "medium": 1, "unknown": 2, "high": 3}
+AGENT_LINE = "\n\n---\n**Агент"   # what the agent appends to a request note after a run (see cli.py)
+DIALOGUE_FOOTER = r"\n*_Записано агентом з діалогу [^_\n]*_\s*"   # the chat's own footer (chat.py): has a clock time
+SAFETY_ORDER = {"ENDS_ON_TOP": 0, "ARRIVAL_AFTER_SAFE_TIME": 1, "RIDGE_OVERNIGHT": 2, "OVERNIGHT_NO_WATER": 3,
+                "OVERNIGHT_TOO_HIGH": 4, "KM_PER_DAY_WARN": 5, "GROUP_TOO_LARGE": 6}
+# Violations about the group itself, not the route: re-planning cannot fix them.
+GROUP_CODES = {"TOO_FEW_ADULTS", "ADULT_RATIO", "GROUP_TOO_LARGE", "TOO_MANY_DAYS"}
+
+
+def group_only_errors(validation: dict[str, Any]) -> bool:
+    errors = [x["code"] for x in validation.get("violations", []) if x["severity"] == "error"]
+    return bool(errors) and set(errors) <= GROUP_CODES
 
 # The tool schemas' bounds. A value outside them is dropped here (and reported), instead of making
 # every validate_hike_plan call fail on the schema.
@@ -144,11 +163,7 @@ def sanitise_request(d: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     d["start_time"] = normalise_time(d.get("start_time"))
     d["must_include"] = d.get("must_include") or []
     d["places"] = [p for p in (d.get("places") or []) if isinstance(p, str) and p.strip()][:3]
-    if d.get("section") == "senior":  # adults travelling on their own: everyone is a participant
-        if d.get("participants") is None and d.get("adults"):
-            d["participants"], d["adults"] = d["adults"], 0
-        if d.get("adults") is None:
-            d["adults"] = 0
+    notes += group_consistency(d)   # adults travelling on their own: everyone is a participant
     return d, notes
 
 
@@ -208,35 +223,178 @@ def check_proposal(prop: dict[str, Any], state: State) -> tuple[list[str], dict[
     return problems, norm
 
 
+ADULT_CODES = {"TOO_FEW_ADULTS", "ADULT_RATIO"}
+
+
+def group_conclusion(validation: dict[str, Any], weather: dict[str, Any] | None = None) -> str:
+    """The route is fine; only the group's composition is below the (draft) norms. The leader asked for this
+    to be a recommendation, not a verdict: the plan comes first, the escort advice second."""
+    errors = [x for x in validation.get("violations", []) if x["severity"] == "error"]
+    days = " / ".join(f"{d['km']:g}" for d in validation.get("days", []))
+    risk = {"low": "низький", "medium": "середній", "high": "високий", "unknown": "невідомий"}.get(
+        (weather or {}).get("overall_risk"), "")
+    text = (f"Маршрут «{validation.get('route_name', '?')}» підходить: дні по {days} км"
+            + (f", погодний ризик {risk}" if risk else "") + ". ")
+    if any(x["code"] in ADULT_CODES for x in errors):
+        text += "За можливості візьміть ще когось із дорослих на супровід: "
+    text += " ".join(violation_ua(x) for x in errors)
+    if "DRAFT" in (validation.get("rules_status") or ""):
+        text += " Ці норми поки чернетка: їх має затвердити провідник."
+    return text
+
+
 def fallback_conclusion(state: State) -> str:
-    """A plain summary from the tool results, used when the model does not answer in time."""
+    """The conclusion from the tool results, by code: used for the small local model (it tends to retell its
+    instructions instead) and when a model does not answer in time. Safety first, numbers from the tools."""
     v, w, st = state.get("validation") or {}, state.get("weather") or {}, state.get("status")
-    if st == "failed" or not v.get("valid"):
+    if st == "failed" or not v.get("days"):
         return ("Валідного плану скласти не вдалося: дивіться порушення останньої спроби нижче "
                 "і змініть запит (дні, ліміти або район).")
-    days = " / ".join(f"{d['km']:g}" for d in v.get("days", []))
-    warnings = sum(1 for x in v.get("violations", []) if x["severity"] == "warning") + \
-        len((state.get("supplies") or {}).get("warnings", []))
+    days = " / ".join(f"{d['km']:g} км (+{d['ascent_m']} м)" for d in v.get("days", []))
     risk = {"low": "низький", "medium": "середній", "high": "високий", "unknown": "невідомий"}.get(
         w.get("overall_risk"), w.get("overall_risk"))
-    text = (f"Маршрут «{v['route_name']}», старт {state['proposal']['start_date']}, дні по {days} км. "
-            f"Погодний ризик: {risk}. Попереджень: {warnings} — перегляньте їх нижче. ")
+    text = f"Маршрут «{v['route_name']}», старт {state['proposal']['start_date']}, дні: {days}. "
     if st == "risky":
         text += "План не рекомендований без змін через погоду. "
+    cold = w.get("coldest_night_c")
+    text += f"Погодний ризик {risk}" + (f", найхолодніша ніч {cold:g} °C" if cold is not None else "") + ". "
+    safety = sorted((x for x in v.get("violations", []) if x["severity"] == "warning"),
+                    key=lambda x: SAFETY_ORDER.get(x["code"], 9))
+    if safety:
+        text += "Головне: " + " ".join(violation_ua(x) for x in safety[:3]) + " "
     if "DRAFT" in (v.get("rules_status") or ""):
         text += "Норми Пласту в системі ще чернетка: їх має затвердити провідник."
     return text.strip()
 
 
-async def understand(llm: LLM, text: str) -> tuple[dict[str, Any], list[str], list[str]]:
-    """LLM reads the free text -> (parsed request, notes about changed values, missing core facts in Ukrainian)."""
-    today = date.today()
+async def read_with_model(llm: LLM, text: str, today: date) -> dict[str, Any]:
+    """The one model call of understanding: free text -> the model's raw reading (ParsedRequest as a dict)."""
     system = PARSE_SYSTEM.format(today=today.isoformat(), weekday=UA_WEEKDAYS[today.weekday()],
                                  calendar=calendar_text(today))
     req: ParsedRequest = await llm.structured(ParsedRequest, system, f"<note>\n{text}\n</note>")
-    d, notes = sanitise_request(req.model_dump(mode="json"))
+    return req.model_dump(mode="json")
+
+
+def interpret(raw: dict[str, Any], text: str, today: date) -> tuple[dict[str, Any], list[str], list[str]]:
+    """Code after the model: keep values inside the tools' bounds, then check them against the words
+    of the text (understanding.refine). No model call, so the evaluation can replay saved readings."""
+    d, notes = sanitise_request(dict(raw))
+    d, checked = refine(d, text, today)
     missing = [k for k in MISSING_UA if d.get(k) is None]
-    return d, notes, missing
+    return d, notes + checked, missing
+
+
+EXCLUDED_UA = {"too short for the days": "закороткий на стільки днів", "too long for the days": "задовгий на "
+               "стільки днів", "other region": "інший район", "not enough allowed night spots": "замало дозволених "
+               "ночівель"}
+
+
+def excluded_ua(excluded: dict[str, int]) -> str:
+    """find_routes' reasons for leaving routes out, for the leader: «закороткий на стільки днів: 1»."""
+    def one(reason: str) -> str:
+        if reason.startswith("missing "):
+            return "немає: " + reason.removeprefix("missing ")
+        if " km or more from " in reason:
+            km, place = reason.split(" km or more from ")
+            return f"далі {km} км від {place}"
+        return EXCLUDED_UA.get(reason, reason)
+    return "; ".join(f"{one(k)}: {n}" for k, n in excluded.items()) or "нічого не знайдено"
+
+
+KIND_UA = {"peak": "вершина", "lake": "озеро", "spring": "джерело", "hut": "колиба", "shelter": "притулок",
+           "campsite": "табірне місце", "village": "село", "town": "селище", "locality": "полонина / урочище"}
+
+
+WISH_KINDS = {"peak", "lake", "locality", "village", "town", "hut"}
+
+
+def where_ua(place: dict[str, Any]) -> str:
+    return f"{KIND_UA.get(place['kind'], place['kind'])}, {REGION_UA[place['region']]}" + \
+        (f", {place['elevation_m']} м" if place["elevation_m"] else "")
+
+
+def confident(r: dict[str, Any]) -> bool:
+    """Is a word from the text really this place? A stem match ("found") may differ by a case ending
+    («сивулю» vs «Сивуля»: 0.83) or be the start of a longer name («піп іван» -> «Піп Іван Чорногірський»);
+    a misspelling ("corrected") must be close."""
+    b = r["best"]
+    if r["status"] == "found":
+        words = r["query"].lower().split()
+        return b["score"] >= 0.75 or b["name"].lower().replace("ґ", "г").split()[:len(words)] == words
+    return r["status"] == "corrected" and b["score"] >= 0.85
+
+
+def pick_place(r: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """The name to search and show for one resolve_places result, and the place it stands for.
+    A misspelling takes the dataset's name («піпівана» -> «Піп Іван Чорногірський»). A found name takes the
+    equally close dataset name with as many words as the leader wrote («близницю» -> «Близниця», not
+    «Близниця Велика»); if there is none, the leader's word stays, as a longer name would narrow the
+    search («Сивулю» matches both Сивуля Велика and Мала, «Сивуля Мала» only one)."""
+    b = r["best"]
+    if r["status"] != "found":
+        return b["name"], b
+    words = len(r["query"].replace("-", " ").split())
+    same = [c for c in [b, *r["alternatives"]] if c["score"] >= b["score"] - 1e-9 and len(c["name"].split()) == words]
+    return (same[0]["name"], same[0]) if same else (r["query"], b)
+
+
+async def resolve_named_places(links: McpLinks, d: dict[str, Any], text: str = "") -> list[str]:
+    """plast-trail.resolve_places: misspelt names -> the dataset's names, and the region of the places when
+    the request gives none. Words of the text that look like a place the model did not list («хочемо на
+    Близницю») are checked too; only confident finds are kept. Changes d; returns notes for the leader.
+    A failure here is noted, never fatal."""
+    given = list(d.get("places") or [])
+    from_text = [c for c in place_candidates(text) if c not in given][: max(0, 5 - len(given))] if text else []
+    if not given and not from_text:
+        return []
+    args: dict[str, Any] = {"names": given + from_text} | ({"region": d["region"]} if d.get("region") else {})
+    try:
+        res = await links.call("plast-trail", "resolve_places", args)
+    except Exception as exc:  # the server is old or down: plan with the names as written
+        return [f"Назви місць не перевірено ({type(exc).__name__}); шукаю так, як написано."]
+    notes: list[str] = []
+    chosen: list[tuple[str, dict[str, Any]]] = []   # (name to search and show, the place it stands for)
+    for i, r in enumerate(res["results"]):
+        b = r["best"]
+        if i >= len(given):   # a word from the text, not from the model: only a confident, fitting find
+            if not confident(r) or b["kind"] not in WISH_KINDS or (d.get("region") and b["region"] != d["region"]):
+                continue
+            name, place = pick_place(r)
+            name = name if name != r["query"] else " ".join(w[:1].upper() + w[1:] for w in name.split())
+            if any(place["name"] == p["name"] or name == n for n, p in chosen):
+                continue
+            notes.append(f"Місце з тексту: {name} ({KIND_UA.get(place['kind'], place['kind'])}, "
+                         f"{REGION_UA[place['region']]}).")
+        elif r["status"] == "not_found":
+            notes.append(f"«{r['query']}» немає в довіднику назв, тому не враховую; перевірте написання.")
+            continue
+        else:
+            name, place = pick_place(r)
+            if r["status"] == "corrected":
+                notes.append(f"«{r['query']}» → {name} ({where_ua(place)}).")
+            elif r["status"] == "ambiguous":
+                options = "; ".join(f"{c['name']} ({REGION_UA[c['region']]})" for c in [b, *r["alternatives"]][:3])
+                notes.append(f"«{r['query']}»: кілька схожих місць — {options}. Беру {name}; виправте, якщо не так.")
+        if place["on_routes"] == 0:
+            notes.append(f"{place['name']} ({where_ua(place)}): через нього не проходить жоден маршрут у даних, "
+                         "тому підберу маршрути, що підходять найближче.")
+        chosen.append((name, place))
+    chosen = chosen[:3]
+    d["places"] = [n for n, _ in chosen]
+    d["place_points"] = [{"name": p["name"], "lat": p["lat"], "lon": p["lon"], "elevation_m": p["elevation_m"]}
+                         for _, p in chosen]
+    regions = [p["region"] for _, p in chosen]
+    if d.get("region") is None and regions and len(set(regions)) == 1:
+        d["region"] = regions[0]
+        notes.append(f"Район: {REGION_UA[d['region']]} — за названими місцями.")
+    return notes
+
+
+async def understand(llm: LLM, text: str, today: date | None = None) -> tuple[dict[str, Any], list[str], list[str]]:
+    """Free text -> (request, notes for the leader, missing core facts). One model call, then code.
+    `today` is fixed by the evaluation, so relative dates ('в суботу') have one right answer."""
+    today = today or date.today()
+    return interpret(await read_with_model(llm, text, today), text, today)
 
 
 # ------------------------------------------------------------------ graph
@@ -251,6 +409,9 @@ def build_graph(links: McpLinks, llm: LLM):
             raise AgentStop(f"Запит не знайдено в Obsidian ({exc.message}). "
                             f"Наявні запити: {', '.join('Запити/' + f for f in files) or 'немає'}") from exc
         text = note["content"] if isinstance(note, dict) else str(note)
+        # each run appends «**Агент (2026-11-16 01:30):** …» to the note; on a re-run that time read as the
+        # leader's start time and a model's invented 20:00 slipped through. Only the leader's text counts.
+        text = re.sub(DIALOGUE_FOOTER, "", text.split(AGENT_LINE)[0]).rstrip()
         print(f"    прочитано {len(text)} символів")
         return {"request_text": text, "attempts": [], "search_notes": state.get("search_notes", [])}
 
@@ -260,6 +421,7 @@ def build_graph(links: McpLinks, llm: LLM):
             return {}
         step("2. Розбираю запит (LLM → структуровані поля)")
         d, notes, missing = await understand(llm, state["request_text"])
+        notes += await resolve_named_places(links, d, state["request_text"])
         print("    " + json.dumps({k: v for k, v in d.items() if v not in (None, [])}, ensure_ascii=False))
         for x in notes:
             print(f"    {YELLOW}{x}{RESET}")
@@ -278,19 +440,30 @@ def build_graph(links: McpLinks, llm: LLM):
         notes = list(state.get("search_notes", []))
         result = await links.call("plast-trail", "find_routes", args)
         # An empty list is a valid answer: relax the wishes step by step and say so.
-        for relax in ("must_include", "region"):
-            if result["routes"] or relax not in args:
+        relax_ua = {"must_include": "побажання {v}", "places": "маршрут через {v}", "region": "район {v}"}
+        for relax in ("must_include", "places", "region"):
+            if result["routes"]:
                 break
-            notes.append(f"Немає маршрутів з умовою {relax}={args.pop(relax)}; шукаю без неї.")
+            if relax not in args:
+                continue
+            value = args.pop(relax)
+            shown = ", ".join(value) if isinstance(value, list) else value
+            notes.append(f"Немає маршруту на {r['days']} дн. з умовою «{relax_ua[relax].format(v=shown)}» "
+                         f"({excluded_ua(result['excluded'])}); шукаю без неї.")
             print(f"    {YELLOW}{notes[-1]}{RESET}")
             result = await links.call("plast-trail", "find_routes", args)
         if not result["routes"]:
             raise AgentStop(f"Жоден маршрут не підходить. Причини: {result['excluded']}. {result['notes']}")
-        if any("were ignored" in n for n in result["notes"]):
-            notes.append(f"Жодного з названих місць ({', '.join(r['places'])}) немає на маршрутах у даних; "
-                         "шукаю без них. Перевірте написання.")
+        far_places = sorted({n for x in result["routes"] for n in x.get("distance_to_places_km", {})})
+        for name in far_places:   # a wished place on no route: the server ranked routes by distance to it
+            best = min(result["routes"], key=lambda x: x["distance_to_places_km"].get(name, 1e9))
+            notes.append(f"Через {name} не проходить жоден маршрут у даних. Найближче підходить «{best['name']}» — "
+                         f"{best['distance_to_places_km'][name]:g} км по прямій; до самого місця — окремий радіальний вихід.")
             print(f"    {YELLOW}{notes[-1]}{RESET}")
-        elif any("passes all of" in n for n in result["notes"]):
+        if any("not a known place name" in n for n in result["notes"]):
+            notes.append("Частини назв місць немає в довіднику; їх не враховано. Перевірте написання.")
+            print(f"    {YELLOW}{notes[-1]}{RESET}")
+        if any("passes all of" in n for n in result["notes"]):
             notes.append(f"Жоден маршрут у даних не проходить через усі місця ({', '.join(r['places'])}); "
                          "показую маршрути хоча б через одне з них.")
             print(f"    {YELLOW}{notes[-1]}{RESET}")
@@ -359,7 +532,10 @@ def build_graph(links: McpLinks, llm: LLM):
         return {"attempts": state["attempts"] + [attempt], "validation": v, "weather": {}}
 
     def after_validate(state: State) -> str:
-        if state["validation"].get("valid"):
+        v = state["validation"]
+        # Only the group itself breaks the rules (too few adults, say): the route is fine and another route or
+        # date cannot fix it, so finish the plan (weather, supplies, picture) and ask the leader to fix the group.
+        if v.get("valid") or group_only_errors(v):
             return "weather"
         return "propose" if len(state["attempts"]) < MAX_ATTEMPTS else "give_up"
 
@@ -442,15 +618,32 @@ def build_graph(links: McpLinks, llm: LLM):
         else:
             pk = s["pack_participant"]
             print(f"    їжа {s['food_kg_group']} кг на групу, газ {s['gas_g_group']} г, намети {s['tents']}, "
-                  f"пальники {s['stoves']}; наплічник учасника {pk['total_kg']} кг (ліміт {pk['limit_kg']})")
+                  f"пальники {s['stoves']}; наплічник учасника {pk['total_kg']} кг "
+                  f"({'ліміт ' + str(pk['limit_kg']) + ' кг' if pk['limit_kg'] is not None else 'без ліміту для групи'})")
         warnings = [x for x in v["violations"] if x["severity"] == "warning"] + s["warnings"]
-        if w.get("overall_risk") in ("high", "unknown"):
+        if group_only_errors(v):
+            status = "group"   # the route is fine; the group must change before the hike
+            print(f"    {YELLOW}маршрут підходить; за можливості візьміть ще дорослого на супровід{RESET}")
+        elif w.get("overall_risk") in ("high", "unknown"):
             status = "risky"
         elif w.get("overall_risk") == "medium" or warnings:
             status = "attention"
         else:
             status = "ok"
         return {"supplies": s, "status": status}
+
+    async def picture(state: State) -> State:
+        step("7б. Дані для малюнка маршруту (plast-trail.get_route_profile)")
+        p = state["proposal"]
+        try:
+            prof = await links.call("plast-trail", "get_route_profile", {
+                "route_id": p["route_id"], "overnight_waypoint_ids": p["overnight_waypoint_ids"]})
+        except Exception as exc:   # an old server without the tool, say: the plan note is written without a picture
+            print(f"    {YELLOW}малюнок пропущено ({type(exc).__name__}){RESET}")
+            return {"route_profile": {}}
+        print("    " + " · ".join(f"день {d['day']}: +{d['ascent_m']}/−{d['descent_m']} м, дуже круто {d['steep_km']:g} км"
+                                   for d in prof["days"]))
+        return {"route_profile": prof}
 
     async def give_up(state: State) -> State:
         best = state.get("best")
@@ -467,8 +660,20 @@ def build_graph(links: McpLinks, llm: LLM):
         return "supplies" if state.get("best") else "conclude"
 
     async def conclude(state: State) -> State:
-        step("8. Висновок для провідника (LLM)")
         final = state.get("validation") or {}
+        if state.get("status") == "group":
+            # the reason is exact and known: say it in code (a small model blamed the draft rules instead)
+            step("8. Висновок для провідника (з фактів, без моделі)")
+            text = group_conclusion(final, state.get("weather") or {})
+            print(f"    {text[:300]}")
+            return {"conclusion": text}
+        provider = getattr(getattr(llm, "provider", None), "name", "")
+        if provider == "ollama":   # the small local model retells its instructions: the facts say it better
+            step("8. Висновок для провідника (з фактів; локальна модель пише висновки гірше)")
+            text = fallback_conclusion(state)
+            print(f"    {text[:300]}")
+            return {"conclusion": text}
+        step("8. Висновок для провідника (LLM)")
         is_plan = state["status"] != "failed" and final.get("valid")
         facts = {
             "status": state["status"],
@@ -482,8 +687,12 @@ def build_graph(links: McpLinks, llm: LLM):
                 "weather_overall": (state.get("weather") or {}).get("overall_risk"),
                 "weather_triggers": [{"date": d["date"], "code": t["code"], "risk": t["risk"]}
                                      for d in (state.get("weather") or {}).get("days", []) for t in d["triggers"]],
-                "warnings": [x["message"] for x in final.get("violations", []) if x["severity"] == "warning"][:6]
-                            + (state.get("supplies") or {}).get("warnings", [])[:3],
+                # safety first: the model tends to repeat whatever comes first, e.g. the missing gear weight
+                "warnings": [x["message"] for x in sorted(
+                    (x for x in final.get("violations", []) if x["severity"] == "warning"),
+                    key=lambda x: SAFETY_ORDER.get(x["code"], 9))][:6]
+                            + [w for w in (state.get("supplies") or {}).get("warnings", [])
+                               if not w.startswith("Вагу спорядження не вказано")][:3],
             } if is_plan else None,
             "last_errors": [f for a in state["attempts"][-1:] for f in a["feedback"]][:4] if not is_plan else [],
         }
@@ -493,7 +702,10 @@ def build_graph(links: McpLinks, llm: LLM):
                             "затвердити. Статус attention — план валідний, але назви головні попередження й що з ними "
                             "робити. Якщо статус risky або failed — чітко скажи, що план не рекомендований без змін і чому. "
                             "history — це відхилені спроби, не описуй їх як чинний план. Не згадуй чисел, дат, назв чи "
-                            "погодних явищ, яких немає в JSON.", json.dumps(facts, ensure_ascii=False))
+                            "погодних явищ, яких немає в JSON. Спершу назви найважливіше для безпеки: високий чи "
+                            "середній погодний ризик і холодну ніч, кінець маршруту на висоті без спуску, пізній прихід, "
+                            "ночівлю без води. Не пиши, що дозволяють чи вимагають правила Пласту, понад надане.",
+                            json.dumps(facts, ensure_ascii=False))
         except Exception as exc:  # the plan note must still be written: a factual summary instead
             print(f"    {YELLOW}модель не відповіла вчасно ({type(exc).__name__}); пишу висновок із фактів{RESET}")
             text = fallback_conclusion(state)
@@ -503,7 +715,8 @@ def build_graph(links: McpLinks, llm: LLM):
     g = StateGraph(State)
     for name, fn in [("read_request", read_request), ("parse_request", parse_request),
                      ("search_routes", search_routes), ("propose", propose), ("validate", validate),
-                     ("weather", weather), ("supplies", supplies), ("give_up", give_up), ("conclude", conclude)]:
+                     ("weather", weather), ("supplies", supplies), ("picture", picture), ("give_up", give_up),
+                     ("conclude", conclude)]:
         g.add_node(name, fn)
     g.add_edge(START, "read_request")
     g.add_edge("read_request", "parse_request")
@@ -514,7 +727,8 @@ def build_graph(links: McpLinks, llm: LLM):
     g.add_conditional_edges("validate", after_validate, {"weather": "weather", "propose": "propose",
                                                          "give_up": "give_up"})
     g.add_conditional_edges("weather", after_weather, {"propose": "propose", "supplies": "supplies"})
-    g.add_edge("supplies", "conclude")
+    g.add_edge("supplies", "picture")
+    g.add_edge("picture", "conclude")
     g.add_conditional_edges("give_up", after_give_up, {"supplies": "supplies", "conclude": "conclude"})
     g.add_edge("conclude", END)
     return g.compile()

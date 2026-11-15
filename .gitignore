@@ -7,6 +7,8 @@ certs/
 demo-vault/.obsidian/
 # Plans the agent writes during runs are output, not source.
 demo-vault/Плани/*.md
+demo-vault/Плани/*.svg
+demo-vault/Плани/*.gpx
 # Local copy of a plan when Obsidian was unreachable at write time
 out/
 

@@ -214,9 +214,10 @@ def test_incomplete_request_stops_and_says_what_is_missing():
     from plast_agent.mcp_links import _leaves
     from plast_agent.workflow import AgentStop
     with pytest.raises(Exception) as e:
-        run_agent(FakeLLM({**PARSED, "adults": None, "start_date": None}, []))
+        run_agent(FakeLLM({**PARSED, "adults": None, "section": None, "start_date": None}, []))
     stop = next(x for x in _leaves(e.value) if isinstance(x, AgentStop))   # unwrapped like cli.py does
-    assert "кількість дорослих" in str(stop) and "дата старту" in str(stop)
+    assert "кількість дорослих" in str(stop) and "вікова група" in str(stop)
+    assert "дата старту" not in str(stop)        # the code read «21 листопада 2026» from the note itself
 
 
 def test_note_shows_what_the_agent_understood_and_cleans_model_text():
@@ -251,9 +252,9 @@ def run_chat(llm: FakeLLM, replies: list[str]):
 
 def test_chat_asks_for_what_is_missing_then_saves_and_plans():
     no_adults = {**PARSED, "adults": None}
-    llm = FakeLLM(no_adults, [PARSED, GOOD])   # 1st reading misses adults; after the answer it is complete
+    llm = FakeLLM(no_adults, [GOOD])   # the reading misses adults; the answer «2» is read by code
     code, obsidian, asked = run_chat(llm, [
-        "Юнацтво, 10 людей, Чорногора, хочемо озеро, 3 дні з 21 листопада", "",   # description + end
+        "Юнацтво, 10 людей, Чорногора, хочемо озеро, 3 дні з 21 листопада, можемо зсунути на 2 дні", "",
         "2",                                                                       # answer: adults
         "",                                                                        # confirm: yes
         "Похід Сокіл з чату",                                                      # note title
@@ -263,12 +264,36 @@ def test_chat_asks_for_what_is_missing_then_saves_and_plans():
     request = obsidian.written["Запити/Похід Сокіл з чату.md"]
     assert "Уточнення" in request and "дорослих: 2" in request.lower()
     assert "Плани/Похід Сокіл з чату — план.md" in obsidian.written    # planned and written back
-    assert llm.calls == 4                                          # 2 readings + 1 proposal + conclusion
+    assert llm.calls == 3                                          # 1 reading + 1 proposal + conclusion
 
 
 def test_chat_can_be_cancelled_without_writing_anything():
     code, obsidian, _ = run_chat(FakeLLM(PARSED, []), ["Юнацтво, 10 + 2, Чорногора, 3 дні з 21.11", "", "ні"])
     assert code == 0 and obsidian.written == {}
+
+
+def test_leaders_brebeneskul_request_gets_a_nearby_route_and_a_picture(capsys):
+    """The leader's test of 15 Nov 21:05: «7 хлопців … на бребенеско … 2 дні», 1 adult. It ended as `failed`
+    on a route near Кукул with no picture. Now: the nearest routes to Бребенескул, status `group`, a picture."""
+    from plast_trail.routes import find_routes
+    near = find_routes("yunatstvo", 2, "chornohora", [], 4, None, ["Бребенескул"]).routes[0]
+    options = near.overnight_options
+    proposal = {"route_id": near.id, "overnight_waypoint_ids": [options[len(options) // 2].id],
+                "start_date": "2026-11-23", "reasoning": "найближче до Бребенескула"}
+    reading = {"section": "yunatstvo", "participants": 7, "adults": 1, "days": 2, "start_date": None,
+               "date_flexibility_days": 0, "region": None, "must_include": [], "places": ["Бребенеско"],
+               "start_time": None}
+    code, obsidian, asked = run_chat(FakeLLM(reading, [proposal]), [
+        "планую піти я із юнацтвом, 7 хлопців, думаємо піти на бребенеско, план на 2 дні", "",
+        "думаєм 23 листопада", "", ""])
+    out = capsys.readouterr().out
+    plan = next(v for k, v in obsidian.written.items() if k.endswith("план.md"))
+    assert code == 0 and "План готовий · за можливості візьміть ще дорослого" in plan
+    assert "## Інші варіанти маршруту" in plan
+    assert "місця: Бребенескул" in plan                              # the dataset's name, not «Бребенеско»
+    assert "Найближче підходить" in plan and "Перевірте написання" not in plan
+    assert any(k.endswith("маршрут.svg") for k in obsidian.written) and "маршрут.svg]]" in plan
+    assert "Район: Чорногора" in out or "chornohora" in plan
 
 
 # ------------------------------------------------------------------ model provider chain (OpenRouter -> Ollama)
@@ -295,7 +320,7 @@ class FakeChat:
     def __init__(self, behaviour):
         self.behaviour, self.methods = behaviour, []
 
-    def with_structured_output(self, schema, method):
+    def with_structured_output(self, schema, method, **kwargs):
         self.methods.append(method)
         return FakeRunner(self.behaviour)
 
@@ -362,10 +387,9 @@ def test_chat_with_two_adults_and_named_peaks_like_the_real_session():
     first = {"section": None, "participants": 2, "adults": None, "days": 2, "start_date": "2026-11-23",
              "date_flexibility_days": 0, "region": "chornohora", "must_include": ["peak"],
              "places": ["Говерла", "Петрос"], "start_time": None}
-    second = {**first, "section": "senior", "adults": 0}
     proposal = {"route_id": "r8613511", "overnight_waypoint_ids": ["w4"], "start_date": "2026-11-23",
                 "reasoning": "через Говерлу"}
-    code, obsidian, asked = run_chat(FakeLLM(first, [second, proposal]), [
+    code, obsidian, asked = run_chat(FakeLLM(first, [proposal]), [   # the age answer needs no 2nd reading
         "іду я із сестрою, хочемо на говерлу піднятися 23 листопада, а 24 спуститися біля петроса", "",
         "",               # an empty answer: the agent must ask again, not continue with None
         "20 років нам",   # the group from an age, no model call needed
@@ -378,7 +402,8 @@ def test_chat_with_two_adults_and_named_peaks_like_the_real_session():
     assert not any("дорослих (виховників" in q for q in asked)          # adults are not asked for an adult group
     request = next(v for k, v in obsidian.written.items() if k.startswith("Запити/"))
     assert "Група: 20 років нам" in request and "Дорослих супровідників: 0" in request
-    plan = next(v for k, v in obsidian.written.items() if k.startswith("Плани/"))
+    plan = next(v for k, v in obsidian.written.items() if k.startswith("Плани/") and k.endswith(".md"))
+    assert any(k.endswith("маршрут.svg") for k in obsidian.written)     # the route picture next to the plan
     assert "старші / сеніори, вас 2" in plan
     assert "Жоден маршрут у даних не проходить через усі місця (Говерла, Петрос)" in plan
 
@@ -390,3 +415,205 @@ def test_guess_section_from_words_and_ages():
     assert guess_section("новачки, рій") == "novatstvo"
     assert guess_section("дорослі") == "senior"
     assert guess_section("не знаю") is None
+
+
+def test_chat_reads_answers_by_code_like_the_real_session(capsys):
+    """The leader's real dialogue of 15 Nov: earlier every answer cost a model request and the 5th hit the
+    daily limit (429). Now the model reads the description once; the answers are read by code."""
+    reading = {"section": "yunatstvo", "participants": 11, "adults": 0, "days": None, "start_date": None,
+               "date_flexibility_days": 0, "region": "chornohora", "must_include": ["hut", "campsite"],
+               "places": ["Піпівана", "Бребенеско"], "start_time": None}   # like gemma4:e4b's real reading
+    llm = FakeLLM(reading, [])
+    code, obsidian, asked = run_chat(llm, [
+        "хочу повести своїх дітей, наш гурток 10 хлопців десь 11-13 років, думав почати із піпівана "
+        "і закінчити бребенеско", "",
+        "я думаю 1 буду",                                  # adults
+        "не важливо, хочемо вийти 19 листопада",           # days: an assumption + the start date in passing
+        "ні",                                              # cancel at the summary
+    ])
+    out = capsys.readouterr().out
+    assert llm.calls == 1                                  # one model reading for the whole dialogue
+    assert [q for q in asked if "Скільки дорослих" in q] and [q for q in asked if "Скільки днів" in q]
+    assert not [q for q in asked if "Коли старт" in q]     # the date came with the days answer
+    assert "учасників 10" in out and "моє припущення" in out and "Прибрано побажання" in out
+    assert "«Піпівана» → Піп Іван Чорногірський" in out              # plast-trail.resolve_places
+    assert "Бребенескул" in out and "жоден маршрут у даних" in out     # the data gap, said plainly
+    assert obsidian.written == {}
+
+
+def test_too_few_adults_gives_the_full_plan_and_asks_to_fix_the_group():
+    """Only the group breaks the rules: the route is fine, so the plan is finished (weather, supplies, picture)
+    with status `group`, after one attempt: another route cannot add an adult."""
+    llm = FakeLLM({**PARSED, "adults": 1}, [GOOD])
+    state, _ = run_agent(llm)
+    codes = {x["code"] for x in state["validation"]["violations"] if x["severity"] == "error"}
+    assert codes and codes <= {"TOO_FEW_ADULTS", "ADULT_RATIO"}
+    assert len(state["attempts"]) == 1 and state["status"] == "group"
+    assert state["weather"]["days"] and state["supplies"] and state["route_profile"]["days"]
+    assert llm.calls == 2                                  # reading + one proposal; the conclusion is written by code
+    assert "підходить" in state["conclusion"] and "За можливості візьміть ще когось" in state["conclusion"]
+
+
+def test_plan_note_gets_a_route_picture():
+    """get_route_profile -> an SVG the plan note embeds: one colour per day, night spots, peaks, steepness."""
+    import xml.etree.ElementTree as ET
+
+    from plast_agent.picture import route_svg
+    from plast_agent.render import render_plan
+    state, links = run_agent(FakeLLM(PARSED, [GOOD]))
+    prof = state["route_profile"]
+    assert [d["day"] for d in prof["days"]] == [1, 2, 3]
+    assert sum(d["km"] for d in prof["days"]) == pytest.approx(sum(d["km"] for d in state["validation"]["days"]), abs=0.2)
+    assert [d["ascent_m"] for d in prof["days"]] == [d["ascent_m"] for d in state["validation"]["days"]]
+    svg = route_svg(prof, state["validation"], state["proposal"]["start_date"])
+    ET.fromstring(svg)                                   # well-formed: Obsidian can show it
+    assert "День 1" in svg and "День 3" in svg and "ночівля 2" in svg and "Петрос" in svg
+    note = render_plan({**state, "picture_path": "Плани/x — маршрут.svg"}, REQUEST, "fake-model", "2026-11-15 10:00")
+    assert "![[Плани/x — маршрут.svg]]" in note
+    Path(__file__).resolve().parents[1].joinpath("out").mkdir(exist_ok=True)
+    Path(__file__).resolve().parents[1].joinpath("out", "test-route-picture.svg").write_text(svg, encoding="utf-8")
+
+
+def test_route_profile_rejects_unknown_night_spots():
+    _, res = call("get_route_profile", {"route_id": "r8613349", "overnight_waypoint_ids": ["w999"]})
+    assert res.isError and "WAYPOINT_NOT_FOUND" in res.content[0].text
+
+
+def test_plan_note_links_to_a_real_map_and_a_gpx_track():
+    import xml.etree.ElementTree as ET
+
+    from plast_agent.picture import mapy_link, route_gpx
+    from plast_agent.render import render_plan
+    state, _ = run_agent(FakeLLM(PARSED, [GOOD]))
+    prof = state["route_profile"]
+    from plast_agent.picture import day_track, route_track
+    link = mapy_link(route_track(prof))
+    nights = [x for x in prof["landmarks"] if x["night"]]
+    day2 = day_track(prof, prof["days"][1])
+    assert (day2[0][1], day2[0][2]) == (nights[0]["lat"], nights[0]["lon"])   # day 2 starts exactly at night 1
+    assert [p[0] for p in route_track(prof)] == sorted(p[0] for p in route_track(prof))   # no back-and-forth
+    assert link.startswith("https://mapy.com/fnc/v1/route?mapset=outdoor&routeType=foot_hiking&start=")
+    assert 1 <= link.split("waypoints=")[1].count(";") + 1 <= 13          # Mapy.com takes at most 15 points
+    gpx = ET.fromstring(route_gpx(prof, [{"name": "Бребенескул", "lat": 48.1, "lon": 24.56, "elevation_m": 2038}]))
+    ns = {"g": "http://www.topografix.com/GPX/1/1"}
+    assert len(gpx.findall("g:trk", ns)) == 3 and len(gpx.findall(".//g:trkpt", ns)) > 100
+    assert any("Бребенескул" in (w.findtext("g:name", "", ns)) for w in gpx.findall("g:wpt", ns))
+    note = render_plan({**state, "gpx_path": "Плани/x — маршрут.gpx"}, REQUEST, "fake-model", "2026-11-15 10:00")
+    assert "[Увесь маршрут](https://mapy.com/" in note and "[день 3](" in note and "[[Плани/x — маршрут.gpx]]" in note
+
+
+def test_interactive_map_block_for_the_leaflet_plugin():
+    from plast_agent.picture import leaflet_block
+    from plast_agent.render import render_plan
+    state, _ = run_agent(FakeLLM(PARSED, [GOOD]))
+    wished = [{"name": "Бребенескул, озеро", "lat": 48.1, "lon": 24.56, "elevation_m": 2038}]
+    block = leaflet_block(state["route_profile"], "Плани/x — маршрут.gpx", wished, "plast-test")
+    import re
+
+    import yaml
+    lines = block.splitlines()
+    assert lines[0] == "```leaflet" and lines[-1] == "```" and "gpx: [[Плани/x — маршрут.gpx]]" in lines
+    # the plugin hides [[links]] and parses the rest as YAML; a YAML error broke the whole map (15 Nov)
+    body = re.sub(r"\[\[[^\]]*\]\]", "LEAFLET_INTERNAL_LINK_0", "\n".join(lines[1:-1]))
+    params = yaml.safe_load(body)
+    assert params["gpxColor"] == "#ff1f5a" and params["unit"] == "km"
+    # CARTO (the plugin's default) needs a key since 2026: off; OpenTopoMap first, on its real subdomains a-c
+    assert params["osmLayer"] is False and params["tileSubdomains"] == "a,b,c"
+    assert params["tileServer"][0].startswith("https://{s}.tile.opentopomap.org") and len(params["tileServer"]) == 2
+    assert all(len(layer.split("|")) == 2 for layer in params["tileServer"])   # the plugin splits url|name
+    assert "zoomFeatures" not in params                       # it left a grey map before the GPX loaded
+    assert len(params["marker"]) == 2 + 2 + 1                 # start, finish, 2 nights, the wished place
+    assert all(m.count(",") == 4 for m in params["marker"])   # a comma in a name would shift the fields
+    assert any("Бребенескул" in m for m in params["marker"])
+    plain = render_plan({**state, "gpx_path": "Плани/x — маршрут.gpx"}, REQUEST, "m", "2026-11-15 10:00")
+    with_map = render_plan({**state, "gpx_path": "Плани/x — маршрут.gpx", "leaflet": True}, REQUEST, "m", "2026-11-15 10:00")
+    assert "```leaflet" not in plain and "```leaflet" in with_map   # only when the plugin is there
+
+
+def test_map_zoom_fits_the_route():
+    from plast_agent.picture import fit_zoom
+    # the plan «Перевірка карти»: Бистрець -> Ґаджина and Бребенескул, ~9 x 5 km: zoom 12 (11 left it tiny)
+    assert fit_zoom(48.0976, 48.1400, 24.5552, 24.6804) == 12
+    assert fit_zoom(48.0, 48.6, 23.9, 24.9) == 9               # a long trip: the whole range, not a crop
+    assert fit_zoom(48.10, 48.105, 24.55, 24.555) == 15        # a short walk: not zoomed past 15
+
+
+def test_a_named_place_with_no_fitting_route_is_relaxed_not_a_dead_end(capsys):
+    """Offline test of 15 Nov: «Горгани, 3 дні, хочемо на Сивулю, ≤12 км/день» stopped: the only route
+    through Сивуля is too short for 3 days. Now the place is relaxed like the other wishes, and said so."""
+    from plast_trail.routes import find_routes
+    from itertools import combinations
+
+    from plast_trail.models import GroupLimits
+    from plast_trail.validation import validate_hike_plan
+    near = find_routes("yunatstvo", 3, "gorgany", [], 4, 12, []).routes[0]
+    opts = near.overnight_options
+    # the most even split into 3 days that the rules accept (the model's job in a real run)
+    pairs = sorted(combinations(opts, 2), key=lambda ab: max(ab[0].km, ab[1].km - ab[0].km, near.length_km - ab[1].km))
+    nights = next([a.id, b.id] for a, b in pairs if a.km < b.km and validate_hike_plan(
+        near.id, "yunatstvo", 10, 2, [a.id, b.id], None, None, GroupLimits(max_km_per_day=12)).valid)
+    proposal = {"route_id": near.id, "overnight_waypoint_ids": nights, "start_date": "2026-11-21",
+                "reasoning": "Горгани без Сивулі"}
+    reading = {"section": "yunatstvo", "participants": 10, "adults": 2, "days": 3, "start_date": "2026-11-21",
+               "date_flexibility_days": 0, "region": "gorgany", "must_include": [], "places": ["Сивуля"],
+               "start_time": None, "max_km_per_day": 12}
+    code, obsidian, _ = run_chat(FakeLLM(reading, [proposal]), [
+        "Гурток: 10 юнаків і 2 виховники. 3 дні з 21 листопада, Горгани, хочемо на Сивулю. Не більше 12 км на день.",
+        "", "", ""])
+    plan = next(v for k, v in obsidian.written.items() if k.endswith("план.md"))
+    assert "Немає маршруту на 3 дн. з умовою «маршрут через Сивуля» (закороткий на стільки днів" in plan
+    assert code == 0 and "status: failed" not in plan
+
+
+def test_a_place_the_model_missed_is_found_in_the_text():
+    from plast_agent.workflow import resolve_named_places
+
+    async def go():
+        async with create_connected_server_and_client_session(plast_trail_server) as session:
+            links = McpLinks(SimpleNamespace(obsidian_mcp_url="x", plast_trail_url="y"))
+            links.sessions = {"plast-trail": session}
+            d = {"region": None, "places": []}
+            notes = await resolve_named_places(links, d, "на вихідних ідемо курінем у Свидовець, хочемо на "
+                                                          "Близницю, ночувати біля джерела")
+            return d, notes
+    d, notes = asyncio.run(go())
+    assert d["places"] == ["Близниця"] and d["region"] == "svydovets"
+    assert any("Місце з тексту: Близниця" in n for n in notes)
+    assert "джерела" not in str(d["places"]).lower()
+
+
+def test_conclusion_gets_safety_first_and_no_gear_weight_noise():
+    class Recording(FakeLLM):
+        async def text(self, system: str, user: str) -> str:
+            self.facts = json.loads(user)
+            return await super().text(system, user)
+    llm = Recording({**PARSED, "participant_base_gear_kg": None, "adult_base_gear_kg": None}, [GOOD])
+    state, _ = run_agent(llm)
+    warnings = llm.facts["final_plan"]["warnings"]
+    assert not any(w.startswith("Вагу спорядження не вказано") for w in warnings)
+    from plast_agent.workflow import PROPOSE_SYSTEM
+    assert "Do not state what Plast rules allow" in PROPOSE_SYSTEM
+
+
+def test_the_agents_own_status_lines_are_not_read_as_the_request():
+    """A re-run read «**Агент (2026-11-16 01:30):** …» from the note: «01:30» passed as the leader's start time
+    and a model's invented 20:00 stayed (arrival at 04:24, 16 Nov)."""
+    obsidian = FakeObsidian()
+    obsidian.written[REQUEST] = NOTE + "\n\n---\n**Агент (2026-11-16 01:30):** attention → [[Плани/x]]\n"
+    llm = FakeLLM({**PARSED, "start_time": "20:00"}, [GOOD])
+
+    async def go():
+        async with create_connected_server_and_client_session(plast_trail_server) as session:
+            links = McpLinks(SimpleNamespace(obsidian_mcp_url="x", plast_trail_url="y"))
+            links.sessions = {"plast-trail": session, "obsidian": obsidian}
+            return await build_graph(links, llm).ainvoke({"request_path": REQUEST}, {"recursion_limit": 80})
+    state = asyncio.run(go())
+    assert "Агент" not in state["request_text"] and state["request"]["start_time"] == "08:00"
+
+
+def test_factual_conclusion_puts_safety_first():
+    from plast_agent.workflow import fallback_conclusion
+    state, _ = run_agent(FakeLLM(PARSED, [GOOD]))
+    text = fallback_conclusion(state)
+    assert text.startswith("Маршрут «") and "Погодний ризик" in text and "найхолодніша ніч" in text
+    assert "Вагу спорядження" not in text

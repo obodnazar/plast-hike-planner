@@ -3,7 +3,8 @@
     uv run python scripts/reset_demo.py
 
 * removes the status lines the agent appended to request notes (everything from "---\\n**Агент");
-* deletes the plan notes the agent wrote in demo-vault/Плани/ (they are agent output, git-ignored).
+* deletes what the agent wrote in demo-vault/Плани/: plan notes, route pictures (.svg) and tracks (.gpx)
+  (agent output, git-ignored).
 Touches nothing else. Obsidian picks up the changes by itself.
 """
 
@@ -22,7 +23,7 @@ def main() -> None:
         if cut != -1:
             note.write_text(text[:cut].rstrip() + "\n", encoding="utf-8")
             print(f"cleaned  {note.relative_to(VAULT)}")
-    for plan in sorted((VAULT / "Плани").glob("*.md")):
+    for plan in sorted(p for ext in ("*.md", "*.svg", "*.gpx") for p in (VAULT / "Плани").glob(ext)):
         plan.unlink()
         print(f"deleted  {plan.relative_to(VAULT)}")
     print("demo vault reset")

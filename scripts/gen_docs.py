@@ -50,6 +50,25 @@ TOOL_NOTES: dict[str, dict[str, Any]] = {
         "side_effects": "None. Reads `data/routes.json` and `data/rules.yaml` (cached in memory). No network.",
         "example": {"section": "yunatstvo", "days": 3, "region": "chornohora", "must_include": ["lake"], "max_results": 2},
     },
+    "resolve_places": {
+        "purpose": "Understands place names as people write them. A leader writes «піпівана» or «на Говерлу»; this tool "
+                   "finds the named place in a gazetteer of ~1500 OSM peaks, lakes, villages, polonyny and huts, says how "
+                   "sure it is (found / corrected / ambiguous / not_found), which region it is in and how many routes "
+                   "pass it. The agent calls it right after reading the request: corrected names go to find_routes, "
+                   "the places' region fills a missing region, and a place on no route is told to the leader.",
+        "processing": "1) the find_routes rule: every word stem of the written name occurs in the place's name; "
+                      "2) otherwise letter similarity (difflib ≥ 0.8), also against the start of a long name. Ties: the "
+                      "requested region, then peaks and lakes, then places on some route, then the higher peak. "
+                      "on_routes uses find_routes' own matching, so a corrected name is guaranteed to work there.",
+        "errors": [
+            ("Empty list, more than 5 names, a name shorter than 2 or longer than 60 characters, unknown region",
+             "`isError: true`, pydantic validation message from FastMCP; the tool body does not run"),
+            ("Gazetteer file missing", "`isError: true`, code `DATA_UNAVAILABLE`, hint: run `scripts/build_places.py`"),
+            ("A name not in the dataset", "**not an error**: `status: \"not_found\"`, `best: null`"),
+        ],
+        "side_effects": "None. Reads `data/places.json` and `data/routes.json` (cached in memory). No network.",
+        "example": {"names": ["піпівана", "бребенеско", "Петроса"]},
+    },
     "validate_hike_plan": {
         "purpose": "The rule checker and the engine of the feedback loop. Given a route and the night spots, it splits the "
                    "route into days and computes every number itself (km, ascent, walking hours, arrival vs sunset), then "
@@ -73,6 +92,24 @@ TOOL_NOTES: dict[str, dict[str, Any]] = {
         "example": {"route_id": "r8613349", "section": "yunatstvo", "participants": 10, "adults": 2,
                     "overnight_waypoint_ids": ["w47"], "start_date": "2026-11-23", "start_time": "08:00",
                     "group_limits": {"max_km_per_day": 12}},
+    },
+    "get_route_profile": {
+        "purpose": "Shows how hard the plan is. For a validated plan (route + night spots) it returns each day's elevation "
+                   "profile every 250 m with coordinates, the day's climb, drop, highest point and steep km, and the "
+                   "landmarks (start, finish, night spots, named peaks, lakes, huts). The agent draws from it the route "
+                   "picture embedded in the Obsidian plan note: a map sketch with the days in colour and the elevation "
+                   "profile coloured by steepness.",
+        "processing": "Splits the route profile at the night spots (the same checks of ids and order as "
+                      "validate_hike_plan); climb and drop with the same 10 m hysteresis, so the numbers equal "
+                      "validate_hike_plan's; steep_km sums the 250 m segments steeper than 15 % (a display band, not a rule); "
+                      "each day carries the neighbouring point of the next day so the lines join.",
+        "errors": [
+            ("Unknown route id", "`isError: true`, code `ROUTE_NOT_FOUND`"),
+            ("Night spot not on the route, out of order, or the start/finish", "codes `WAYPOINT_NOT_FOUND` / `WAYPOINT_ORDER`, as in validate_hike_plan"),
+            ("Schema violations (id not matching `^r\\d+$`/`^w\\d+$`, more than 6 night spots)", "`isError: true`, pydantic validation message"),
+        ],
+        "side_effects": "None. Reads `data/routes.json`. No network.",
+        "example": {"route_id": "r8613349", "overnight_waypoint_ids": ["w47"]},
     },
     "assess_weather_risk": {
         "purpose": "Turns a forecast into decisions. For the same plan (route + night spots) and a start date it returns "
@@ -278,9 +315,10 @@ async def custom_contracts() -> list[str]:
          "the example outputs are real calls (lists shortened with `... N more`).", "",
          "## Server", "",
          "- **Process:** separate, started with `uv run plast-trail` (streamable HTTP, `http://127.0.0.1:8770/mcp`; `--stdio` also available).",
-         "- **Data:** `data/routes.json` (121 OSM routes + SRTM heights), `data/rules.yaml` (DRAFT norms with sources), "
+         "- **Data:** `data/routes.json` (121 OSM routes + SRTM heights), `data/places.json` (1494 named places, "
+         "the gazetteer), `data/rules.yaml` (DRAFT norms with sources), "
          "Open-Meteo forecasts (live / record / replay).",
-         "- **Server instructions** (sent at `initialize`) describe the typical flow: find → validate (loop) → weather (loop) → supplies.", "",
+         "- **Server instructions** (sent at `initialize`) describe the typical flow: resolve place names → find → validate (loop) → weather (loop) → supplies → (optional) route profile for a picture.", "",
          "## Error model (all tools)", "",
          "| Situation | What the caller gets |", "|---|---|",
          "| Domain failure (unknown route, missing fixture, …) | `isError: true`; text = `Error executing tool <name>: ` (prefix added by FastMCP) + `{\"error\": {\"code\": \"...\", \"message\": \"...\", \"hint\": \"...\"}}`. The hint says what the caller (model) should do next |",

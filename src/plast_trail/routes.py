@@ -59,6 +59,8 @@ def overnight_options(route: dict[str, Any], section: str, limit: int = 12) -> l
     ]
 
 
+NEAR_KM = 8.0   # a named place farther than this from a route is not "near" it
+
 PLACE_PREFIXES = ("г.", "гора ", "оз.", "озеро ", "с.", "село ", "смт ", "пол.", "полонина ", "пер.")
 
 
@@ -86,9 +88,26 @@ def matched_places(r: dict[str, Any], places: list[str]) -> list[str]:
 def find_routes(section: str, days: int, region: str | None, must_include: list[str],
                 max_results: int, group_max_km_per_day: float | None = None,
                 places: list[str] | None = None) -> FindRoutesResult:
+    from plast_trail.places import distance_to_route_km, locate   # here: places.py imports this module
+
     routes = load_routes()
     places = [p for p in (places or []) if place_stems(p)]
     note = ""
+    # A named place that no route passes (Бребенескул is on the main ridge, which only the long trails follow):
+    # do not drop the wish, rank the routes by how close they come to it instead.
+    off_route = [p for p in places if not any(matched_places(r, [p]) for r in routes.values())]
+    near: dict[str, Any] = {}
+    off_notes = []
+    for p in off_route:
+        where = locate(p, region)
+        if where is None:
+            off_notes.append(f"'{p}' is not a known place name (check the spelling); it was ignored.")
+        else:
+            near[where.name] = where
+            off_notes.append(f"No route in the dataset passes {where.name} ({where.kind}, {where.elevation_m or '?'} m); "
+                             f"routes are ranked by how close they come to it (distance_to_places_km). Reaching it is "
+                             "a side trip: tell the user.")
+    places = [p for p in places if p not in off_route]
     if places:  # named places: all of them if any route allows it, otherwise at least one
         full = [r for r in routes.values() if len(matched_places(r, places)) == len(places)]
         if not full:
@@ -97,9 +116,7 @@ def find_routes(section: str, days: int, region: str | None, must_include: list[
                 note = (f"No route in the dataset passes all of: {', '.join(places)}. Showing routes that pass "
                         "at least one of them; tell the user.")
                 routes = partial
-            else:  # none of the names is on any route: do not drop everything, say so
-                note = (f"None of the named places ({', '.join(places)}) is on any route in the dataset; "
-                        "they were ignored. Tell the user and check the spelling.")
+            else:  # cannot happen any more (off-route names were taken out above); kept for safety
                 places = []
         else:
             note = ""
@@ -109,7 +126,7 @@ def find_routes(section: str, days: int, region: str | None, must_include: list[
         hard = min(hard, group_max_km_per_day) if hard else group_max_km_per_day
         target = min(target, group_max_km_per_day)
     excluded: dict[str, int] = {}
-    notes: list[str] = [note] if note else []
+    notes: list[str] = ([note] if note else []) + off_notes
 
     max_days = section_rule(section, "max_days")
     if max_days["value"] and days > max_days["value"]:
@@ -154,6 +171,11 @@ def find_routes(section: str, days: int, region: str | None, must_include: list[
             reasons.append("has " + ", ".join(must_include))
         if places:
             reasons.append(f"passes {', '.join(hit)}" if hit else "passes none of the named places")
+        distances = {n: round(distance_to_route_km(pl, r), 1) for n, pl in near.items()}
+        if distances:   # the leader named the place: closeness counts more than the km/day fit
+            closest = min(distances.values())
+            score = round(0.3 * score + 0.7 * max(0.0, 1 - closest / NEAR_KM), 2)
+            reasons.append("comes within " + ", ".join(f"{d:g} km of {n}" for n, d in distances.items()))
         if days > 1:
             reasons.append(f"{len(options)} allowed night spots for {days - 1} night(s)")
 
@@ -163,9 +185,14 @@ def find_routes(section: str, days: int, region: str | None, must_include: list[
             loop=r["loop"], start=r["waypoints"][0]["name"], finish=r["waypoints"][-1]["name"],
             avg_km_per_day=round(avg, 1), features=sorted(kinds - {"start", "finish"}),
             overnight_options=options if days > 1 else [],
-            fit_score=round(score, 2), fit_reasons=reasons, places_matched=hit,
+            fit_score=round(score, 2), fit_reasons=reasons, places_matched=hit, distance_to_places_km=distances,
         ))
 
+    if near and any(min(s.distance_to_places_km.values()) < NEAR_KM for s in found):
+        far = [s for s in found if min(s.distance_to_places_km.values()) >= NEAR_KM]
+        for _ in far:
+            exclude(f"{NEAR_KM:g} km or more from {', '.join(near)}")
+        found = [s for s in found if s not in far]
     found.sort(key=lambda s: (-s.fit_score, s.ascent_m))
     if not found:
         notes.append("No route matched. Try fewer wishes, another region, or a different number of days.")

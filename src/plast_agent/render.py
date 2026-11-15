@@ -8,10 +8,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from plast_agent.picture import MAP_CREDITS, day_track, leaflet_block, mapy_link, route_track, side_trip_link
+
 STATUS = {
     "ok": "✅ План готовий",
     "attention": "⚠️ План валідний, але є попередження: перегляньте їх перед виходом",
     "risky": "⚠️ План складено, але НЕ рекомендовано без змін (погода)",
+    "group": "✅ План готовий · за можливості візьміть ще дорослого на супровід",
     "failed": "❌ Валідного плану скласти не вдалося",
 }
 SECTION_UA = {"novatstvo": "новацтво", "yunatstvo": "юнацтво", "senior": "старші / сеніори"}
@@ -25,6 +28,7 @@ VIOLATION_UA = {
     "ASCENT_PER_DAY_MAX": "День {day}: набір висоти {actual} м, ліміт {limit} м.",
     "WALKING_HOURS_MAX": "День {day}: {actual} год ходу, ліміт {limit} год.",
     "ARRIVAL_AFTER_SAFE_TIME": "День {day}: прихід о {actual}, а безпечно — до {limit} (за 3 год до заходу сонця).",
+    "ENDS_ON_TOP": "День {day}: маршрут закінчується на висоті {actual} м, а спуску в плані немає — заплануйте дорогу вниз.",
     "OVERNIGHT_KIND_NOT_ALLOWED": "Ночівля після дня {day}: тип «{actual}» для цієї групи не дозволено (можна: {limit}).",
     "OVERNIGHT_TOO_HIGH": "Ночівля після дня {day} на {actual} м, а ліміт групи {limit} м.",
     "RIDGE_OVERNIGHT": "Ночівля після дня {day} ({actual} м) схожа на гребінь або вершину.",
@@ -120,6 +124,26 @@ def render_plan(state: dict[str, Any], request_path: str, model: str, generated_
         rid = v["route_id"]
         add(f"## Маршрут\n**{v['route_name']}** — {v['total_km']} км, набір {v['total_ascent_m']} м. "
             f"[OpenStreetMap](https://www.openstreetmap.org/relation/{rid.removeprefix('r')}) · id `{rid}`\n")
+        if state.get("picture_path"):
+            add(f"![[{state['picture_path']}]]\n")
+        prof = state.get("route_profile") or {}
+        if prof.get("days"):
+            add("**На справжній карті** (Mapy.com: туристична карта, профіль висот, підйом і спуск; браузер або застосунок):")
+            add(f"- 🗺 [Увесь маршрут]({mapy_link(route_track(prof))})"
+                + "".join(f" · [день {d['day']}]({mapy_link(day_track(prof, d))})" for d in prof["days"] if len(prof["days"]) > 1))
+            for place in (state.get("request") or {}).get("place_points") or []:
+                link, gap = side_trip_link(route_track(prof), place)
+                if gap > 0.3:
+                    add(f"- ⭐ [Радіальний вихід: {place['name']}]({link}) — {gap:.1f} км по прямій від маршруту")
+            if state.get("gpx_path"):
+                add(f"- 📍 Трек для телефона (Mapy, OsmAnd, Organic Maps): [[{state['gpx_path']}]]")
+            if state.get("leaflet") and state.get("gpx_path"):   # an interactive map right here (Leaflet plugin)
+                add("\n**Інтерактивна карта** (колесо миші — масштаб; кнопка шарів праворуч угорі — топокарта або "
+                    "супутник; потрібен інтернет):\n")
+                add(leaflet_block(prof, state["gpx_path"], (state.get("request") or {}).get("place_points"),
+                                  state.get("leaflet_id", "plast-plan")))
+                add(f"_{MAP_CREDITS}_\n")
+            add("_Mapy.com сам прокладає стежку через наші точки, тож може трохи відрізнятися від маршруту в даних._\n")
         add("| День | Звідки → куди | км | набір, м | год ходу | старт → прихід | захід сонця | ночівля |")
         add("|---|---|---|---|---|---|---|---|")
         for d in v["days"]:
@@ -133,7 +157,11 @@ def render_plan(state: dict[str, Any], request_path: str, model: str, generated_
                 f"{d['walking_hours']} | {d['start_time']} → {d['est_arrival']} | {d.get('sunset') or '—'} | {night} |")
         errors = [x for x in v.get("violations", []) if x["severity"] == "error"]
         warns = [x for x in v.get("violations", []) if x["severity"] == "warning"]
-        if errors:
+        if errors and state.get("status") == "group":
+            add("\n**Супровід (порада):**")
+            for x in errors:
+                add(f"- {violation_ua(x)} За можливості візьміть ще когось на супровід (норми — чернетка).")
+        elif errors:
             add("\n**Порушення (план не валідний):**")
             for x in errors:
                 add(f"- ✗ {violation_ua(x)} _Порада інструмента: {clean(x['suggestion'], 300)}_")
@@ -141,6 +169,18 @@ def render_plan(state: dict[str, Any], request_path: str, model: str, generated_
             add("\n**Попередження:**")
             for x in warns:
                 add(f"- {violation_ua(x)} _Порада інструмента: {clean(x['suggestion'], 300)}_")
+
+    others = [x for x in (state.get("search") or {}).get("routes", []) if x["id"] != v.get("route_id")]
+    if v.get("days") and others:
+        add("\n## Інші варіанти маршруту")
+        add("| Маршрут | км | набір, м | найвища точка, м | названі місця |")
+        add("|---|---|---|---|---|")
+        for x in others:
+            near = [f"{n}: {d:g} км від маршруту" for n, d in (x.get("distance_to_places_km") or {}).items()]
+            passes = [f"через {n}" for n in x.get("places_matched") or []]
+            add(f"| [{clean(x['name'], 80)}](https://www.openstreetmap.org/relation/{x['id'].removeprefix('r')}) | "
+                f"{x['length_km']} | {x['ascent_m']} | {x['max_elevation_m']} | {'; '.join(passes + near) or '—'} |")
+        add("_Щоб спланувати інший варіант, допишіть у запит його назву й запустіть агента знову._")
 
     if w.get("days"):
         add(f"\n## Погода (загальний ризик: **{w['overall_risk']}**)")

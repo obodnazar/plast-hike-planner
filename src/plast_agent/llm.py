@@ -191,14 +191,19 @@ def build_providers(settings: Settings, with_ollama: bool) -> list[Provider]:
                          default_headers={"X-Title": "plast-hike-planner"}),
         method="function_calling", structured_deadline=120, text_deadline=45)]
     if with_ollama:
+        # gemma4 "thinks" before answering by default: hundreds of hidden tokens, 20+ s, a hot laptop
+        # and sometimes no answer within 4 min. reasoning_effort="none" switches that off (measured:
+        # 0.4 s instead of 20 s for a short reading); a token cap stops a runaway answer (hut, hut, hut...).
         local = dict(model=settings.ollama_model, api_key="ollama", base_url=settings.ollama_base_url,
-                     temperature=0, max_retries=0)
+                     temperature=0, max_retries=0, reasoning_effort="none")
         providers.append(Provider(
             name="ollama", model=settings.ollama_model,
-            chat=ChatOpenAI(timeout=240, **local), quick=ChatOpenAI(timeout=90, **local),
+            # langchain sends max_tokens as `max_completion_tokens`, which Ollama ignores: pass Ollama's own field
+            chat=ChatOpenAI(timeout=180, extra_body={"max_tokens": 700}, **local),
+            quick=ChatOpenAI(timeout=90, extra_body={"max_tokens": 900}, **local),
             # Ollama has no tool_choice: function_calling may return nothing. json_schema goes into
             # Ollama's `format` and constrains decoding, so the answer is always valid JSON.
-            method="json_schema", structured_deadline=240, text_deadline=90))
+            method="json_schema", structured_deadline=180, text_deadline=90))
     return providers
 
 
@@ -256,13 +261,21 @@ class LLM:
             raise ProviderFailed(f"{p.label} не відповіла за {seconds} с") from exc
 
     async def _structured_once(self, p: Provider, schema: type[BaseModel], system: str, user: str) -> BaseModel:
-        runner = p.chat.with_structured_output(schema, method=p.method)
+        if p.method == "json_schema":
+            # Ollama: a plain JSON schema, checked by pydantic below. The strict form makes all 17 fields
+            # required and gemma4 then loops on whitespace up to the token cap (measured: 11 of 30 readings
+            # failed; with the plain schema the same readings take 3-4 s).
+            runner = p.chat.with_structured_output(schema.model_json_schema(), method="json_schema", strict=False)
+        else:
+            runner = p.chat.with_structured_output(schema, method=p.method)
         messages = [("system", system), ("user", user)]
         last_problem = ""
         for _ in (1, 2):  # one retry with the reason if the answer breaks the schema
             self._count(p)
             try:
                 result = await self._deadline(p, runner, messages, p.structured_deadline)
+                if isinstance(result, dict):
+                    result = schema.model_validate(result)
             except (ValidationError, OutputParserException) as exc:
                 last_problem = f"{type(exc).__name__}: {str(exc)[:300]}"
                 messages.append(("user", f"Your previous answer broke the schema: {last_problem}. "

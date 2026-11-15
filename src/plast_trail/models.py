@@ -15,7 +15,7 @@ WaypointKind = Literal["start", "finish", "water", "hut", "shelter", "campsite",
 ViolationCode = Literal[
     "KM_PER_DAY_MAX", "KM_PER_DAY_WARN", "ASCENT_PER_DAY_MAX", "WALKING_HOURS_MAX", "ARRIVAL_AFTER_SAFE_TIME",
     "OVERNIGHT_KIND_NOT_ALLOWED", "OVERNIGHT_TOO_HIGH", "RIDGE_OVERNIGHT", "OVERNIGHT_NO_WATER",
-    "TOO_MANY_DAYS", "TOO_FEW_ADULTS", "ADULT_RATIO", "GROUP_TOO_LARGE", "START_TOO_EARLY",
+    "TOO_MANY_DAYS", "TOO_FEW_ADULTS", "ADULT_RATIO", "GROUP_TOO_LARGE", "START_TOO_EARLY", "ENDS_ON_TOP",
 ]
 TriggerCode = Literal["THUNDERSTORM", "SNOW", "WIND", "RAIN", "NIGHT_COLD"]
 TriggerUnit = Literal["wmo_code", "m/s", "mm", "°C"]
@@ -140,6 +140,9 @@ class RouteSummary(BaseModel):
     fit_score: float = Field(ge=0, le=1, description="How well the length suits the daily distance, 1 = ideal")
     fit_reasons: list[str] = Field(description="Plain-language reasons behind the score")
     places_matched: list[str] = Field(default_factory=list, description="Which of the requested named places this route passes")
+    distance_to_places_km: dict[str, float] = Field(
+        default_factory=dict, description="For named places that NO route passes: how close this route comes to each, "
+                                          "km (straight line). Reaching the place is a side trip; tell the user")
 
 
 class FindRoutesResult(BaseModel):
@@ -295,3 +298,68 @@ class SuppliesResult(BaseModel):
     gear_additions: list[str] = Field(description="Extra gear for this plan (Ukrainian): cold nights, dry nights, long days")
     warnings: list[str] = Field(description="Problems to solve before the hike (Ukrainian, for the leader)")
     assumptions: list[Assumption] = Field(description="Every coefficient used, with its source")
+
+
+PlaceKind = Literal["peak", "lake", "spring", "hut", "shelter", "campsite", "village", "town", "locality"]
+
+
+class PlaceCandidate(BaseModel):
+    name: str = Field(description="Name as in OpenStreetMap; pass it to find_routes(places=...) as is")
+    kind: PlaceKind = Field(description="peak, lake, spring, hut, shelter, campsite, village, town, or locality (polonyna, urochyshche)")
+    region: Region = Field(description="Mountain area by the nearest region centre (the routes' rule)")
+    elevation_m: int | None = Field(description="Height from OpenStreetMap, m; null if not mapped")
+    lat: float = Field(description="Latitude")
+    lon: float = Field(description="Longitude")
+    on_routes: int = Field(description="How many routes of the dataset pass this place; 0 = find_routes then ranks "
+                                       "routes by how close they come to it")
+    route_ids: list[str] = Field(description="Up to 5 of those route ids")
+    score: float = Field(description="Similarity of the written name to this place's name, 0-1")
+
+
+class PlaceResolution(BaseModel):
+    query: str = Field(description="The name as written in the request")
+    status: Literal["found", "corrected", "ambiguous", "not_found"] = Field(
+        description="found: the name matches as written (the best match is `best`); corrected: a misspelling, "
+                    "use best.name instead; ambiguous: two places fit equally, ask the user (see alternatives); "
+                    "not_found: no similar named place in the dataset (not an error)")
+    best: PlaceCandidate | None = Field(description="The most likely place; null if not_found")
+    alternatives: list[PlaceCandidate] = Field(description="Other places with a similar name, best first (up to 3)")
+
+
+class ResolvePlacesResult(BaseModel):
+    results: list[PlaceResolution] = Field(description="One entry per requested name, in the same order")
+    gazetteer_size: int = Field(description="Named places in the dataset")
+    source: str = Field(description="Data source and licence")
+
+
+class ProfileDay(BaseModel):
+    day: int = Field(description="Day number, 1-based")
+    start_km: float = Field(description="Route km where the day starts")
+    end_km: float = Field(description="Route km where the day ends")
+    km: float = Field(description="Day distance, km (as in validate_hike_plan)")
+    ascent_m: int = Field(description="Climb of the day, m (10 m hysteresis, as in validate_hike_plan)")
+    descent_m: int = Field(description="Drop of the day, m")
+    max_elevation_m: int = Field(description="Highest point of the day, m")
+    steep_km: float = Field(description="Distance where the slope is steeper than steep_grade (up or down), km")
+    points: list[list[float]] = Field(description="Profile of the day every 250 m: [km, lat, lon, elevation_m]")
+
+
+class Landmark(BaseModel):
+    id: str = Field(description="Waypoint id on this route")
+    kind: WaypointKind = Field(description="start, finish, water, hut, shelter, campsite, peak or lake")
+    name: str = Field(description="Name from OpenStreetMap; may be empty")
+    km: float = Field(description="Position on the route, km")
+    elevation_m: int | None = Field(description="Height, m")
+    lat: float = Field(description="Latitude")
+    lon: float = Field(description="Longitude")
+    night: int | None = Field(description="Night number if the group sleeps here, else null")
+
+
+class RouteProfileResult(BaseModel):
+    route_id: str = Field(description="Route id")
+    route_name: str = Field(description="Route name from OpenStreetMap")
+    length_km: float = Field(description="Route length, km")
+    steep_grade: float = Field(description="Slope used for steep_km (0.15 = 15 %): a display band, not a Plast rule")
+    days: list[ProfileDay] = Field(description="The plan split into days at the night spots")
+    landmarks: list[Landmark] = Field(description="Start, finish, night spots and named peaks, lakes, huts on the way")
+    source: str = Field(description="Data sources and licences")

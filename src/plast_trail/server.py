@@ -29,7 +29,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from plast_trail import routes, supplies, validation, weather
+from plast_trail import places as gazetteer
+from plast_trail import profile, routes, supplies, validation, weather
 from plast_trail.data import PROJECT_ROOT, dataset_meta, load_routes, rules_status
 from plast_trail.errors import DomainError
 from plast_trail.models import (
@@ -38,6 +39,8 @@ from plast_trail.models import (
     FindRoutesResult,
     GroupLimits,
     Region,
+    ResolvePlacesResult,
+    RouteProfileResult,
     Section,
     SuppliesResult,
     ValidationResult,
@@ -49,12 +52,15 @@ log = logging.getLogger("plast-trail")
 INSTRUCTIONS = """\
 Tools for planning a Plast (Ukrainian scouting) hike on marked trails of the Ukrainian Carpathians.
 Typical flow:
+0. If the request names peaks, lakes or villages: resolve_places(names) -> use the corrected names,
+   ask the user about ambiguous ones, and the region of the places if the request gives none.
 1. find_routes(section, days, ...) -> pick a route and night spots from its overnight_options.
 2. validate_hike_plan(route_id, overnight_waypoint_ids, ...) -> if valid=false, apply the
    suggestions (they name better waypoint ids) and validate again.
 3. assess_weather_risk(same route and night spots, start_date) -> if a day is high risk,
    change dates, night spots or route, then validate again.
 4. calculate_supplies(day_loads from step 2 days[], dry_nights from step 2, night_min_c = coldest_night_c from step 3).
+5. Optional, to show the plan: get_route_profile(same route and night spots) -> per-day profile and landmarks.
 Never invent km, ascent or ids: take them from tool results. Rules are a DRAFT until a
 Plast leader approves them; always mention rules_status to the user.
 """
@@ -94,7 +100,8 @@ mcp = FastMCP("plast-trail", instructions=INSTRUCTIONS)
         "Returns routes ranked by how well km/day fits the section's target, each with allowed overnight "
         "spots (waypoint ids for validate_hike_plan). Use it first. An empty `routes` list means nothing "
         "matched (see `excluded` for why); it is not an error. "
-        "Not a free-text or place-name search, and only the bundled Carpathian dataset. Route ids are "
+        "Not a free-text search; to check or correct a place name first, use resolve_places. Only the bundled "
+        "Carpathian dataset. Route ids are "
         "'r' + the OpenStreetMap relation id; waypoint ids ('w12') are valid only within their own route."
     ),
     annotations=READ_ONLY,
@@ -111,6 +118,30 @@ def find_routes(
 ) -> FindRoutesResult:
     return routes.find_routes(section.value, days, region.value if region else None,
                               [f.value for f in must_include], max_results, max_km_per_day, places)
+
+
+@mcp.tool(
+    title="Resolve place names",
+    description=(
+        "Look up peaks, lakes, villages, polonyny or huts by the names people write, including misspellings and "
+        "case forms ('піпівана' -> 'Піп Іван Чорногірський', 'Говерлу' -> 'Говерла'), in a gazetteer of ~1500 "
+        "named places from OpenStreetMap. For each name: status found / corrected / ambiguous / not_found, the "
+        "best place with its kind, region and height, how many routes of the dataset pass it (on_routes = 0: "
+        "find_routes cannot use it), and alternatives. Use it before find_routes when a request names places: "
+        "pass best.name on to find_routes(places=...), ask the user when the status is ambiguous, and take the "
+        "region from the places if the request gives none. not_found is a normal result, not an error. "
+        "Not a route search and not a geocoder outside the Ukrainian Carpathians."
+    ),
+    annotations=READ_ONLY,
+)
+@logged
+def resolve_places(
+    names: Annotated[list[Annotated[str, Field(min_length=2, max_length=60)]], Field(
+        min_length=1, max_length=5, description="Place names as written by the user, e.g. ['піпівана', 'Говерлу']")],
+    region: Annotated[Region | None, Field(description="Prefer places in this area when names repeat (Петрос is in "
+                                                       "three areas); omit if unknown")] = None,
+) -> ResolvePlacesResult:
+    return gazetteer.resolve_places(names, region.value if region else None)
 
 
 @mcp.tool(
@@ -195,6 +226,27 @@ def calculate_supplies(
     return supplies.calculate_supplies(section.value, participants, adults, day_loads, dry_nights, night_min_c,
                                        tent_capacity, lightest_body_weight_kg, participant_base_gear_kg,
                                        adult_base_gear_kg)
+
+
+@mcp.tool(
+    title="Route profile for a plan",
+    description=(
+        "The shape of a planned hike, for drawing it: for the same route_id and overnight_waypoint_ids as "
+        "validate_hike_plan, the elevation profile of each day every 250 m with coordinates ([km, lat, lon, "
+        "elevation_m]), the day's climb, drop, highest point and how many km are steeper than 15 %, plus "
+        "landmarks (start, finish, night spots, named peaks, lakes, huts). Use it after the plan is valid, to "
+        "show the user how hard each day is (a map sketch and an elevation chart). It does not check rules and "
+        "adds no new decisions: for rules use validate_hike_plan. Ids must come from find_routes."
+    ),
+    annotations=READ_ONLY,
+)
+@logged
+def get_route_profile(
+    route_id: Annotated[str, Field(pattern=r"^r\d+$", description="Route id from find_routes, e.g. 'r8613349'")],
+    overnight_waypoint_ids: Annotated[list[Annotated[str, Field(pattern=r"^w\d+$")]], Field(
+        max_length=6, description="Night spots in route order, as validated; [] for a one-day hike")] = [],  # noqa: B006
+) -> RouteProfileResult:
+    return profile.route_profile(route_id, overnight_waypoint_ids)
 
 
 def main() -> None:
