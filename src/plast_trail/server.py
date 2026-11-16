@@ -273,8 +273,8 @@ class StrictArguments(FuncMetadata):
 
 def make_arguments_strict(server: FastMCP) -> None:
     """Every tool of the server: extra="forbid" on its arguments (also visible in tools/list as
-    additionalProperties: false) and the strict check above. Nested day_loads stay lenient on purpose:
-    validate_hike_plan's days[] can be passed as they are."""
+    additionalProperties: false) and the strict check above. The nested models are strict too (models.Strict):
+    the agent passes each day as km, ascent_m and walking_hours only."""
     for tool in server._tool_manager.list_tools():   # FastMCP has no public hook for this
         base = tool.fn_metadata.arg_model
 

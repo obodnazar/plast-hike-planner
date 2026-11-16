@@ -52,7 +52,7 @@ Snapshot in the committed file: OSM `2026-11-14T19:08:36Z`, 121 routes (skipped:
 | Overpass API | shared public server; asks clients to back off | three queries in total, cached; exponential backoff on 502/429; mirror fallback |
 | OpenTopoData public API | 100 locations per request, 1 request/s, 1000 requests/day | batches of 100, 1.1 s pause, cache saved after every batch (~54 requests for the whole dataset) |
 | Open-Meteo (free, non-commercial) | 600 calls/min, 5000/hour, 10 000/day | ≥ 1 s between calls, 30-minute in-memory cache per route, up to 3 tries with backoff; a full recording is ~121 calls |
-| OpenRouter free models | 20 requests/min, 50/day without credits | 3–6 model calls per agent run (one schema retry per call at most); the count is printed at the end of every run |
+| OpenRouter free models | 20 requests/min, 50/day without credits | 2–5 model calls per agent run (one schema retry per call at most); the count is printed at the end of every run |
 
 ## Secrets and local-only files
 

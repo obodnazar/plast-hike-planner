@@ -75,11 +75,11 @@ Obsidian tools used and their contracts: **[docs/obsidian-contract.md](docs/obsi
 ## Prerequisites
 - [uv](https://docs.astral.sh/uv/) (installs Python 3.12 by itself). Platforms:
   - macOS on Apple silicon: developed and tested here;
-  - Windows x64, Linux x64/arm64 and Intel Macs: the tests run in CI (`.github/workflows/ci.yml`), and ready-made wheels exist for every dependency;
+  - Windows x64, Linux x64 and Intel Macs: the tests run in CI on every push (`.github/workflows/ci.yml`); Linux arm64 has ready-made wheels for every dependency but is not in CI;
   - Windows on ARM is not supported (no wheels).
 - [Obsidian](https://obsidian.md) 1.15+ with the community plugin **Local REST API with MCP** (tested: plugin 5.5.2, Obsidian 1.15.1)
 - A model, one of:
-  - an [OpenRouter](https://openrouter.ai) API key. The default free model needs no credit (20 requests/min, 50/day); one agent run uses 3–6 model calls;
+  - an [OpenRouter](https://openrouter.ai) API key. The default free model needs no credit (20 requests/min, 50/day); one agent run uses 2–5 model calls (reading the request, proposals);
   - the local Ollama model (step 5 below; a 9.5 GB download, 16 GB RAM). With no OpenRouter key the agent runs on it alone.
 
 The custom server and the tests need none of this: after `uv sync`, `uv run pytest -q` and `uv run plast-trail` work with no `.env`, no Obsidian and no key.
@@ -133,7 +133,7 @@ uv run plast-agent --chat --local
 
 **Model chain.** Before a run the agent shows how many free OpenRouter requests are left today (`GET /api/v1/key`) and whether the local model is ready. It starts on OpenRouter. On HTTP 429, a timeout, a server error or a broken schema it switches to the local Ollama model, and after a 429 it remembers "quota used up until 00:00 UTC" (`.cache/`). With fewer than 4 requests left it starts locally. `--local` uses only the local model. The note and the final line say which model answered (e.g. `openrouter 2, ollama 2`). Ollama is called in `json_schema` mode, where the schema constrains decoding, because Ollama has no `tool_choice`.
 
-Model calls have hard deadlines: OpenRouter 120 s for parsing and proposals and 45 s for the closing paragraph; the local Ollama model 180 s and 90 s. OpenRouter keeps slow free-model connections alive, so an HTTP read timeout alone may never fire. For parsing and proposals a cloud failure switches to the local model when it is ready. For the closing paragraph the agent writes a factual summary from the tool results instead when the model fails or times out, and also when the model's paragraph contains any digit: numbers in a plan come from the tools only.
+Model calls have hard deadlines: OpenRouter 120 s, the local Ollama model 180 s. OpenRouter keeps slow free-model connections alive, so an HTTP read timeout alone may never fire. A cloud failure switches to the local model when it is ready. The model reads the request and proposes plans; the conclusion of a plan is written by code from the tool results, so it cannot contradict them.
 The server can also be inspected with any MCP client, e.g. `npx @modelcontextprotocol/inspector` → Streamable HTTP → `http://127.0.0.1:8770/mcp`.
 
 ## Chat and plan pages in the browser (optional)
@@ -173,7 +173,7 @@ Details and rate limits: [docs/data-and-replay.md](docs/data-and-replay.md).
 
 ## Checks
 ```bash
-uv run pytest -q                          # 175 tests: domain logic, schemas over in-memory MCP, the agent, request understanding, the evaluation, portability, the plan pages, the web chat (no network)
+uv run pytest -q                          # 179 tests: domain logic, schemas over in-memory MCP, the agent, request understanding, the evaluation, portability, the plan pages, the web chat (no network)
 uv run plast-web                          # chat and saved plans in the browser (see above)
 uv run python scripts/smoke_server.py     # all 6 tools over real MCP, incl. error cases and an empty result
 uv run check-obsidian                     # Obsidian discovery + one vault_read
