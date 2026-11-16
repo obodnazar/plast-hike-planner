@@ -61,7 +61,9 @@ NOT_MEASURE = r"(?!\s*(?:дн|день|ноч|тиж|км|год|кг|м\b|ро�
 COUNT_AFTER = re.compile(B + PEOPLE + FILL + NUM + E + NOT_AGE + NOT_MEASURE)   # «Новачків 10», not «юнаків 13 років»
 TOGETHER = re.compile(B + NUM + E + r"\s+(?:людей\s+|осіб\s+)?(?:разом|включно)\s+(?:з|із|зі)\s+" + NUM + E +
                       r"\s+" + ADULTS)                               # «12 разом з двома виховниками»
-NO_ADULTS = re.compile(r"без\s+(?:доросл|супровод|виховник|провідник)|" + B + r"0\s+доросл|дорослих\s*[:\-—]?\s*0" + E)
+NO_ADULTS = re.compile(r"без\s+(?:доросл|супровод|виховник|провідник)|" + B + r"0\s+доросл|"
+                       r"(?:доросл|виховник|супровід)\w*\s*[:\-—]?\s*(?:(?:буде|будуть|тепер|стане|вже|лише|на)\s+)*0" + E +
+                       r"|" + B + r"(?:жодного|ні\s+одного)\s+(?:доросл|виховник)")
 
 
 ADULT_BEFORE = re.compile(B + NUM + E + r"\s+" + ADULTS + r"(?:\s+" + ADULTS + r")?")   # «2 дорослі виховники»
@@ -602,6 +604,28 @@ def relative_date(text: str, today: date) -> date | None:
     return today + timedelta(days=7) if re.search(r"через\s+тиждень", t) else None
 
 
+GEAR_SENTENCE = re.compile(r"рюкзак|наплічник|спорядж")
+GEAR_OWNER = {
+    "participant_base_gear_kg": r"учасник\w*|юнак\w*|юнач\w*|дит\w*|новак\w*|новач\w*",
+    "adult_base_gear_kg": r"виховник\w*|доросл\w*|провідник\w*|інструктор\w*|супровід\w*",
+}
+
+
+def gear_weights(text: str, field: str) -> set[float]:
+    """Weights the text states for one person's base rucksack: in a sentence about rucksacks or gear, the
+    number right after the person («учасник — 5 кг»), the latest statement first."""
+    for part in reversed(PARTS.split(text)):
+        found = set()
+        for sentence in re.split(r"[.!?\n]", present_text(part)):
+            if not GEAR_SENTENCE.search(sentence):
+                continue
+            for m in re.finditer(B + r"(?:" + GEAR_OWNER[field] + r")[^.;\d]{0,20}?(\d{1,2}(?:[.,]\d)?)\s*кг", sentence):
+                found.add(float(m.group(1).replace(",", ".")))
+        if found:
+            return found
+    return set()
+
+
 def latest_date(text: str, today: date) -> date | None:
     """The start date from the latest part that states one: a written date anywhere, a relative one
     («на завтра», «в суботу») only in a correction, where it replaces the earlier date."""
@@ -613,7 +637,10 @@ def latest_date(text: str, today: date) -> date | None:
     return None
 
 
-RELATIVE_CHANGE = re.compile(B + r"(?:ще|додай\w*|додамо|плюс|мінус|менше\s+на|більше\s+на|на\s+\w+\s+(?:більше|менше))" + E)
+MORE = r"ще|додай\w*|додамо|додати|плюс|збільш\w*|більше\s+на|на\s+\w+\s+більше"
+LESS = r"мінус|зменш\w*|відніми\w*|прибери\w*|приберем\w*|менше\s+на|на\s+\w+\s+менше|без\s+\w+\s+(?:учасн|юнак|дітей|доросл)"
+RELATIVE_CHANGE = re.compile(B + r"(?:" + MORE + "|" + LESS + r")" + E)
+RELATIVE_LESS = re.compile(B + r"(?:" + LESS + r")" + E)
 PARTICIPANT_WORD = re.compile(B + PEOPLE)
 
 
@@ -650,11 +677,14 @@ def correction_numbers(text: str, rx: re.Pattern, adults: bool = False) -> set[i
         if not rx.search(norm(part)):
             continue
         nums = {n for m in re.finditer(B + NUM + E, norm(part)) if (n := to_int(m.group(1))) is not None}
-        out |= nums
-        if RELATIVE_CHANGE.search(norm(part)):
-            before = latest_people("\n".join(parts[:i]))[1 if adults else 0]
-            if before is not None:
-                out |= {before + n for n in nums} | {before - n for n in nums if before - n >= 0}
+        if not RELATIVE_CHANGE.search(norm(part)):
+            out |= nums                       # «учасників буде 20»: the number is the new count
+            continue
+        # «додай ще 10», «зменш на 2»: the number is the change, never the count; the direction decides
+        before = latest_people("\n".join(parts[:i]))[1 if adults else 0]
+        if before is not None:
+            less = bool(RELATIVE_LESS.search(norm(part)))
+            out |= {before - n for n in nums if before - n >= 0} if less else {before + n for n in nums}
     return out
 
 
@@ -668,7 +698,7 @@ def group_consistency(d: dict[str, Any], text: str = "") -> list[str]:
             d["participants"] = d["adults"]
         d["adults"] = 0
     elif d.get("section") in ("novatstvo", "yunatstvo") and d.get("adults") == 0 and text and \
-            not NO_ADULTS.search(norm(text)):
+            not NO_ADULTS.search(norm(text)) and 0 not in correction_numbers(text, ADULT_WORD, adults=True):
         d["adults"] = None
         notes.append("Дорослих: у тексті не сказано, тому перепитаю (0 дорослих для дитячої групи не беру).")
     return notes
@@ -750,11 +780,11 @@ def refine(d: dict[str, Any], text: str, today: date) -> tuple[dict[str, Any], l
             notes.append(f"{LIMIT_UA[field]} {value:g} у тексті не знайдено, тому не враховую.")
             d[field] = None
 
-    # weighed rucksacks: only a weight the text states («учасник — 5 кг»), never a model's guess
-    kg_in_text = {float(x.replace(",", ".")) for x in re.findall(r"(\d{1,2}(?:[.,]\d)?)\s*кг", present_text(text))}
+    # weighed rucksacks: only a weight the text gives for THAT person's rucksack («Рюкзаки без їжі: учасник —
+    # 5 кг, виховник — 7 кг»), never a model's guess, a tent's weight or another person's rucksack
     for field, who in (("participant_base_gear_kg", "учасника"), ("adult_base_gear_kg", "дорослого")):
         value = d.get(field)
-        if value is not None and float(value) not in kg_in_text:
+        if value is not None and float(value) not in gear_weights(text, field):
             notes.append(f"Вага спорядження {who} {value:g} кг у тексті не знайдено, тому не враховую.")
             d[field] = None
 

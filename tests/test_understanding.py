@@ -334,3 +334,34 @@ def test_gear_weights_only_from_the_text():
     d, _, _ = interpret(dict(base), "Юнацтво, 10 учасників і 2 дорослі, 3 дні з 21 листопада. "
                                     "Рюкзаки без їжі: учасник — 5 кг, виховник — 7 кг.", TODAY)
     assert (d["participant_base_gear_kg"], d["adult_base_gear_kg"]) == (5, 7)
+
+
+# ------------------------------------------------------------------ independent review, fourth round (Codex, 17 Nov)
+def test_zero_adults_and_relative_changes_after_a_plan():
+    """Codex P1 (round 4): «Дорослих буде 0» and «Зменши кількість дорослих на 2» came back as 2;
+    «Додай ще 10 учасників» with an unchanged reading of 10 was accepted."""
+    from plast_agent.workflow import interpret
+    base = dict(section="yunatstvo", participants=10, adults=2, days=3, start_date="2026-11-21")
+    text = "Юнацтво, 10 учасників і 2 дорослі, 3 дні з 21 листопада.\n\nЗміна після плану: "
+    for change, model, want, missing in [
+            ("Дорослих буде 0", dict(adults=0), (10, 0), []),
+            ("Зменши кількість дорослих на 2", dict(adults=0), (10, 0), []),
+            ("Зменши кількість дорослих на 2", dict(adults=2), (10, None), ["adults"]),
+            ("Додай ще 10 учасників", dict(participants=20), (20, 2), []),
+            ("Додай ще 10 учасників", dict(participants=10), (None, 2), ["participants"])]:
+        d, _, m = interpret(base | model, text + change, TODAY)
+        assert ((d["participants"], d["adults"]), m) == (want, missing), (change, model)
+
+
+def test_a_rucksack_weight_belongs_to_its_owner():
+    """Codex P2 (round 4): «учасник — 7 кг, виховник — 5 кг» confirmed a swapped 5 / 7; a tent's 5 kg
+    confirmed a participant's rucksack."""
+    from plast_agent.workflow import interpret
+    g = dict(section="yunatstvo", participants=10, adults=2, days=3, start_date="2026-11-21",
+             participant_base_gear_kg=5, adult_base_gear_kg=7)
+    who = "Юнацтво, 10 учасників і 2 дорослі, 3 дні з 21 листопада. "
+    for extra, want in [("Рюкзаки без їжі й води: учасник — 7 кг, виховник — 5 кг.", (None, None)),
+                        ("Намет важить 5 кг, продукти на групу — 7 кг.", (None, None)),
+                        ("Зважені рюкзаки без їжі й води: учасник — 5 кг, виховник — 7 кг.", (5, 7))]:
+        d, _, _ = interpret(dict(g), who + extra, TODAY)
+        assert (d["participant_base_gear_kg"], d["adult_base_gear_kg"]) == want, extra

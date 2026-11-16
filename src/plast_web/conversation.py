@@ -14,6 +14,7 @@ Everything the leader reads here is Ukrainian written by code, or passed through
 from __future__ import annotations
 
 import asyncio
+import re
 import secrets
 import time
 from datetime import date, timedelta
@@ -24,7 +25,8 @@ from plast_agent.chat import LABELS, QUESTIONS, QUESTIONS_SENIOR, parse_answer, 
 from plast_agent.llm import LLMError
 from plast_agent.mcp_links import ConnectionFailure, McpCallError
 from plast_agent.render import FEATURE_UA, SECTION_UA
-from plast_agent.understanding import REGION_UA, dont_care, group_consistency, parse_count, parse_date, regions_named
+from plast_agent.understanding import (ADULT_WORD, B, NO_ADULTS, PARTICIPANT_WORD, REGION_UA, dont_care, group_consistency,
+                                       norm, parse_count, parse_date, parse_days, regions_named)
 from plast_agent.workflow import MISSING_UA, kyiv_now, resolve_named_places, today_kyiv, understand
 from plast_web.view import MONTHS, clean_note, fmt_date, place_names, present
 
@@ -33,6 +35,24 @@ MAX_TEXT = 4000
 # limits are not here: «більше не хочу озера» must be able to empty them.
 KEEP_AFTER_PLAN = ("section", "participants", "adults", "days", "start_date", "start_time", "region",
                    "date_flexibility_days")
+def talked_about(change: str) -> set[str]:
+    """The fields a message after a plan talks about («Дорослих буде 0» -> adults). The old plan's value of
+    such a field is never put back: if the new reading cannot confirm it, the agent asks."""
+    t = norm(change)
+    found = set()
+    if PARTICIPANT_WORD.search(t):
+        found.add("participants")
+    if ADULT_WORD.search(t) or NO_ADULTS.search(t):
+        found.add("adults")
+    if re.search(B + r"(?:дн|день|ноч|одноден)", t) or parse_days(change):
+        found.add("days")
+    if parse_date(change, today_kyiv()) or re.search(r"старт|вих[іо]д|дат", t):
+        found.add("start_date")
+    if re.search(B + r"(?:новац|новак|юнац|юнак|старш|сеніор|вік|рок)", t):
+        found.add("section")
+    return found
+
+
 SECTION_OPTIONS = [("novatstvo", "новацтво (6–10 років)"), ("yunatstvo", "юнацтво (11–17)"),
                    ("senior", "старші (18+)")]
 STEPS = [   # what the leader sees while the graph runs; graph nodes map onto these
@@ -191,7 +211,8 @@ class Conversation:
             self.text = before + f"\n\nЗміна після плану: {text}"
             self.asked_region = True
             self.trace_from = len(self.runtime.links.trace) if self.runtime.links else 0
-            await self.read("Змінюю план з урахуванням цього…", keep=keep)
+            talked = talked_about(text)   # what the change itself is about: never refilled from the old plan
+            await self.read("Змінюю план з урахуванням цього…", keep={k: v for k, v in keep.items() if k not in talked})
             return
         if self.state in ("describe", "done"):
             self.reset()

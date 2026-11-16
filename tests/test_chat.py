@@ -199,3 +199,14 @@ def test_a_new_head_count_reaches_the_saved_plan_and_supplies():
                    FakeLLM(PARSED, [GOOD, again, GOOD]))
     latest = list_plans()[0]
     assert latest["request"]["participants"] == 20 and latest["supplies"]["people"] == 22
+
+
+def test_zero_adults_reaches_the_saved_plan_and_an_unread_change_is_asked():
+    """Codex P1 (round 4): after «Дорослих буде 0» the chat put the old 2 adults back and planned with them;
+    after «Додай ще двох юнаків» with an unchanged reading it planned for the old 10."""
+    conv, _ = talk([DESCRIPTION, {"type": "confirm"}, "Дорослих буде 0", {"type": "confirm"}],
+                   FakeLLM(PARSED, [GOOD, {**PARSED, "adults": 0}, GOOD]))
+    latest = list_plans()[0]
+    assert latest["request"]["adults"] == 0 and latest["status"] in ("group", "risky")
+    conv, _ = talk([DESCRIPTION, {"type": "confirm"}, "Додай ще двох юнаків"], FakeLLM(PARSED, [GOOD, PARSED]))
+    assert conv.state == "asking" and conv.pending == "participants"     # asked, not planned for 10
