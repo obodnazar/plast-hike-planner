@@ -183,3 +183,10 @@ def test_a_new_date_after_the_plan_is_kept():
     conv, _ = talk([DESCRIPTION, {"type": "confirm"}, "Зміни старт на 23 листопада"], FakeLLM(PARSED, [GOOD, again]))
     fields = {f["key"]: f["value"] for f in of(conv, "card")[-1]["fields"]}
     assert fields["start_date"].startswith("пн, 23 листопада")
+
+
+def test_a_wish_taken_back_after_the_plan_stays_out():
+    """Codex P2 (round 2): the chat put the old «озеро» back when the new reading had none."""
+    again = {**PARSED, "must_include": []}
+    conv, _ = talk([DESCRIPTION, {"type": "confirm"}, "Більше не хочу озера"], FakeLLM(PARSED, [GOOD, again]))
+    assert conv.request["must_include"] == [] and conv.request["participants"] == 10

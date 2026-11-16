@@ -116,15 +116,36 @@ def people_count(text: str) -> tuple[int | None, int | None]:
     return participants, adults
 
 
+def adult_candidates(text: str) -> set[int]:
+    """Numbers the text gives for the adults: counted phrases («2 виховники»), or how many adults it names
+    one by one («інструктор і одна мама» -> 2). «дорослі будуть» names none: the model's number is a guess."""
+    t = present_text(text)
+    phrases = [m for rx in (ADULT_BEFORE, ADULT_AFTER) for m in rx.finditer(t)]
+    found = {to_int(m.group(1)) for m in phrases} - {None}
+    words = [m.group(0) for m in ADULT_WORD.finditer(t)]
+    if words and not phrases and not re.search(r"доросл|взросл|батьк|супровід", " ".join(words)):
+        found.add(len(words))      # named one by one: інструктор, мама, тато, провідник
+    return found | answered(text, "дорослих")
+
+
+def answered(text: str, label: str) -> set[int]:
+    """The dialogue's own answer lines («- Дорослих: я думаю 1 буду»), read as the dialogue read them."""
+    return {n for m in re.finditer(r"^\s*-?\s*" + label + r"\s*[:—-]\s*(.+)$", norm(text), re.M)
+            if (n := parse_count(m.group(1))) is not None}
+
+
 def people_candidates(text: str) -> set[int]:
     """Every number the text puts next to people («60 учасників», «9 осіб»): when they disagree, code cannot
     choose, but a model reading that picked one of them is backed by the text."""
     t = norm(text)
-    return {to_int(m.group(1)) for rx in (COUNT_BEFORE, COUNT_AFTER) for m in rx.finditer(t)} - {None}
+    found = {to_int(m.group(1)) for rx in (COUNT_BEFORE, COUNT_AFTER) for m in rx.finditer(t)} - {None}
+    return found | answered(text, "учасників") | answered(text, "вас усього")
 
 
 NAS = re.compile(B + r"нас\s+(?:буде\s+|будє\s+|усього\s+|всього\s+)?" + NUM + E)          # «нас троє», «нас 5»
 ME_WITH_N = re.compile(B + r"я\s+(?:і|та|з|із|зі)\s+" + NUM + E + r"\s+(?:друз|подруг|товариш|колег)\w*")
+WE_WITH = re.compile(B + r"ми\s+(?:з|із|зі)\s+(?:дружин|чолов|сестр|брат|друг|подруг)\w*\s+(?:і|та)\s+" + NUM + E +
+                     r"\s+(?:друз|подруг|товариш|колег)\w*")             # «ми з дружиною і двома друзями» -> 4
 ME_WITH_ONE = re.compile(B + r"я\s+(?:і|та|з|із|зі)\s+(?:сестр|брат|друг|подруг|товариш)\w*")
 
 
@@ -138,6 +159,9 @@ def people_fallback(text: str) -> int | None:
     m = ME_WITH_N.search(t)
     if m and to_int(m.group(1)):
         return to_int(m.group(1)) + 1
+    m = WE_WITH.search(t)
+    if m and to_int(m.group(1)):
+        return to_int(m.group(1)) + 2
     return 2 if ME_WITH_ONE.search(t) else None
 
 
@@ -173,11 +197,27 @@ AGES_STATED = re.compile(r"(?:по|за|всім|усім)\s+(\d{1,2})" + E + r"
                          r"(\d{1,2})(?:\s*[-–—]\s*\d{1,2})?\s*(?:рок|рік|лєт|лет)")
 
 
+PEOPLE_WORD = re.compile(PEOPLE + "|" + B + r"(?:новак|новач|юнак|юнач|хлопц|дівч|підліт|діт|дитин)\w*")
+
+
+def about_adults(t: str, at: int) -> bool:
+    """Is the age at position `at` about the adults («2 дорослі віком 25 років», «виховникам по 30»)? The
+    nearest word about people before it, within the same clause, decides."""
+    window = t[max(0, at - 45):at]
+    window = re.split(r"[.;!?\n]", window)[-1]
+    adult = [m.end() for m in ADULT_WORD.finditer(window)]
+    people = [m.end() for m in PEOPLE_WORD.finditer(window)]
+    return bool(adult) and (not people or adult[-1] > people[-1])
+
+
 def age_section(text: str) -> str | None:
-    """The group the stated ages point to («13–15 років» -> юнацтво), if they all point to one."""
+    """The group the participants' stated ages point to («13–15 років» -> юнацтво), if they all point to one.
+    Ages of the adults who go with the group are not the group's age."""
     t = present_text(text)
     found = set()
     for m in AGES_STATED.finditer(t):
+        if about_adults(t, m.start()):
+            continue
         age = int(m.group(1) or m.group(2))
         if 6 <= age <= 10:
             found.add("novatstvo")
@@ -210,6 +250,8 @@ def section_supported(text: str, section: str) -> bool:
 
 
 # ------------------------------------------------------------------ region
+SECTION_NAMED = {"novatstvo": r"новацтв|новак|новач|упн", "yunatstvo": r"юнацтв|юнак|юнач|упю",
+                 "senior": r"старш|сеньйор|сеніор|сенйор|упс|усп"}   # the group named by its own word
 SECTION_NAME = {"novatstvo": "новацтво", "yunatstvo": "юнацтво", "senior": "старші"}
 REGION_UA = {"chornohora": "Чорногора", "svydovets": "Свидовець", "gorgany": "Горгани", "marmarosy": "Мармароси",
              "yaremche-vorokhta": "Яремче–Ворохта"}
@@ -318,9 +360,22 @@ FEATURE_UA = {"lake": "озеро", "peak": "вершина", "water": "вода
               "campsite": "табірне місце"}
 
 
+NOT_WISHED = re.compile(r"(?:не\s+(?:хоч|треба|потрібн|будем|підем|йдем)\w*|без|більше\s+не\w*|відмов\w*|"
+                        r"прибер\w*|не\s+бажан\w*)\s+(?:\w+\s+){0,2}$")
+
+
 def wished_features(text: str) -> list[str]:
-    t = norm(text)
-    return [f for f, pattern in FEATURES.items() if re.search(B + "(?:" + pattern + ")", t)]
+    """Wishes in the order the text states them; a later «більше не хочу озера» or «без озера» takes one back."""
+    wished: list[str] = []
+    for part in PARTS.split(text):
+        t = norm(part)
+        for f, pattern in FEATURES.items():
+            for m in re.finditer(B + "(?:" + pattern + ")", t):
+                if NOT_WISHED.search(t[max(0, m.start() - 40):m.start()]):
+                    wished = [w for w in wished if w != f]
+                elif f not in wished:
+                    wished.append(f)
+    return [f for f in FEATURES if f in wished]
 
 
 # ------------------------------------------------------------------ dates and days
@@ -487,6 +542,18 @@ def parse_days(text: str) -> int | None:
     return None
 
 
+def date_span_is(text: str, days: int) -> bool:
+    """«піднятися 23 листопада, а 24 спуститися»: the day numbers of a sentence with a month span `days`."""
+    for sentence in re.split(r"[.!?\n]", present_text(text)):
+        if not re.search(MONTH, sentence):
+            continue
+        nums = {int(x) for x in re.findall(r"(?<![\d.,:])(\d{1,2})(?![\d.,:])(?!\s*(?:км|м\b|год|кг|л\b|рок|рік|ос|учас|"
+                                           r"доросл|юнак|діт|хлопц|дівч|чол|люд|°))", sentence) if 1 <= int(x) <= 31}
+        if len(nums) >= 2 and max(nums) - min(nums) + 1 == days:
+            return True
+    return False
+
+
 DONT_CARE = re.compile(r"не\s*важлив|не\s+важно|все\s?одно|всеодно|байдуже|як\s+скажете|скільки\s+скажете|"
                        r"на\s+(?:ваш|твій)\s+розсуд|без\s+різниці|будь[- ]?(?:як|коли|скільки)|пофіг|"
                        r"не\s+має\s+значення|неважно")
@@ -508,6 +575,17 @@ def latest(fn, text: str, *args):
     for part in reversed(PARTS.split(text)):
         found = fn(part, *args)
         if found not in (None, [], (None, None)):
+            return found
+    return None
+
+
+def latest_date(text: str, today: date) -> date | None:
+    """The start date from the latest part that states one: a written date anywhere, a relative one
+    («на завтра», «в суботу») only in a correction, where it replaces the earlier date."""
+    parts = PARTS.split(text)
+    for i in range(len(parts) - 1, -1, -1):
+        found = explicit_date(parts[i], today) or (parse_date(parts[i], today) if i > 0 else None)
+        if found:
             return found
     return None
 
@@ -543,7 +621,12 @@ def refine(d: dict[str, Any], text: str, today: date) -> tuple[dict[str, Any], l
     notes: list[str] = []
 
     by_age = age_section(text)
-    if by_age and d.get("section") and by_age != d["section"]:
+    named = {s for s, rx in SECTION_NAMED.items() if re.search(B + "(?:" + rx + ")", present_text(text))}
+    if by_age and len(named) == 1 and by_age not in named:
+        notes.append(f"Група: у тексті названо {SECTION_NAME[next(iter(named))]}, а вік учасників вказує на "
+                     f"{SECTION_NAME[by_age]}, тому перепитаю.")
+        d["section"] = None
+    elif by_age and d.get("section") and by_age != d["section"]:
         notes.append(f"Група: за віком у тексті — {SECTION_NAME[by_age]} (модель прочитала {SECTION_NAME[d['section']]}).")
         d["section"] = by_age
     elif d.get("section") in SECTION_WORDS and not section_supported(text, d["section"]):
@@ -561,7 +644,7 @@ def refine(d: dict[str, Any], text: str, today: date) -> tuple[dict[str, Any], l
         if d.get("participants") is not None:
             notes.append(f"Учасників: {participants} — так написано в тексті (модель прочитала {d['participants']}).")
         d["participants"] = participants
-    elif participants is None and d.get("participants") is not None and d.get("section") != "senior" \
+    elif participants is None and d.get("participants") is not None \
             and d["participants"] not in people_candidates(text):
         # the model's number with nothing in the text behind it: ask instead of guessing
         notes.append(f"Учасників: у тексті числа не знайдено, тому перепитаю (модель вказала {d['participants']}).")
@@ -571,8 +654,8 @@ def refine(d: dict[str, Any], text: str, today: date) -> tuple[dict[str, Any], l
             notes.append(f"Дорослих: {adults} — так написано в тексті (модель прочитала {d['adults']}).")
         d["adults"] = adults
     elif adults is None and d.get("adults") and d.get("section") in ("novatstvo", "yunatstvo") \
-            and not ADULT_WORD.search(norm(text)):
-        notes.append(f"Дорослих: у тексті не сказано, тому перепитаю (модель вказала {d['adults']}).")
+            and d["adults"] not in adult_candidates(text):
+        notes.append(f"Дорослих: у тексті числа не знайдено, тому перепитаю (модель вказала {d['adults']}).")
         d["adults"] = None
     notes += group_consistency(d, text)
 
@@ -584,7 +667,7 @@ def refine(d: dict[str, Any], text: str, today: date) -> tuple[dict[str, Any], l
             notes.append(f"Час виходу: {new} — " + ("так написано в тексті" if len(times) == 1 else "у тексті не "
                          "сказано, тому звичайний") + (f" (модель вказала {model_time})." if model_time != "08:00" else "."))
         d["start_time"] = new
-    stated = latest(explicit_date, text, today)
+    stated = latest_date(text, today)
     if stated and d.get("start_date") and stated.isoformat() != d["start_date"]:
         notes.append(f"Дата старту: {stated:%d.%m.%Y} — так написано в тексті (модель прочитала {d['start_date']}).")
         d["start_date"] = stated.isoformat()
@@ -595,8 +678,9 @@ def refine(d: dict[str, Any], text: str, today: date) -> tuple[dict[str, Any], l
         shift = parse_shift(text)
         if shift:
             d["date_flexibility_days"] = min(shift, 3)
-    for field, rx in LIMITS.items():
-        found = {float(next(g for g in m.groups() if g).replace(",", ".")) for m in rx.finditer(norm(text))}
+    for field, rx in LIMITS.items():   # from the latest part that states the limit («тепер не більше 6 км»)
+        found = latest(lambda part: {float(next(g for g in m.groups() if g).replace(",", "."))
+                                     for m in rx.finditer(norm(part))} or None, text) or set()
         value = d.get(field)
         if len(found) == 1:
             new = found.pop()
@@ -648,7 +732,7 @@ def refine(d: dict[str, Any], text: str, today: date) -> tuple[dict[str, Any], l
         if d.get("days") is not None:
             notes.append(f"Днів: {days} — так написано в тексті (модель прочитала {d['days']}).")
         d["days"] = days
-    elif days is None and d.get("days") is not None and not re.search(r"\d", norm(text)):
+    elif days is None and d.get("days") is not None and not date_span_is(text, d["days"]):
         # nothing in the text to count days from: the model invented them («Юнацтво, хочемо в гори» -> 3 дні)
         notes.append(f"Днів: у тексті не сказано, тому перепитаю (модель вказала {d['days']}).")
         d["days"] = None

@@ -169,6 +169,10 @@ def adult_advice(validation: dict[str, Any]) -> str:
 
 # The tool schemas' bounds. A value outside them is dropped here (and reported), instead of making
 # every validate_hike_plan call fail on the schema.
+LIMIT_NAME_UA = {"max_km_per_day": "км на день", "max_ascent_per_day_m": "м набору на день",
+                 "max_walking_hours_per_day": "годин ходу на день", "max_overnight_elevation_m": "м висоти ночівлі",
+                 "lightest_body_weight_kg": "кг вага найлегшого", "participant_base_gear_kg": "кг спорядження учасника",
+                 "adult_base_gear_kg": "кг спорядження дорослого"}
 LIMIT_BOUNDS = {"max_km_per_day": (1, 40), "max_ascent_per_day_m": (100, 3000),
                 "max_walking_hours_per_day": (1, 12), "max_overnight_elevation_m": (300, 2100),
                 "lightest_body_weight_kg": (15, 150), "participant_base_gear_kg": (1, 25),
@@ -305,59 +309,6 @@ def fallback_conclusion(state: State) -> str:
     return text.strip()
 
 
-NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
-CLOCK = re.compile(r"(?<!\d)\d{1,2}:\d{2}(?!\d)")
-UNIT = re.compile(r"\s*(?:км|м/с|м\b|метр|год|хв|°|кг|л\b|літр|г\b|грам|мм|%|ккал|дн|ноч)")
-
-
-def known_numbers(*sources: Any, small: bool = True) -> set[str]:
-    """Every number in the tool results, in the forms a sentence may use: 11.35 -> 11.35, 11.3, 11.4, 11;
-    «2026-11-21» -> 2026, 11, 21. small: also 0-10 (counts such as «2 ночівлі», «3 спроби»)."""
-    out: set[str] = {str(n) for n in range(0, 11)} if small else set()
-
-    def add(x: float) -> None:
-        x = abs(x)
-        out.update({f"{x:g}", f"{round(x, 1):g}", f"{round(x):g}", f"{int(x)}", f"{x:.1f}"})
-
-    for v in _leaves(sources):
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
-            add(float(v))
-        elif isinstance(v, str):
-            for m in NUMBER.finditer(v):
-                add(float(m.group(0).replace(",", ".")))
-    return out
-
-
-def _leaves(v: Any):
-    if isinstance(v, dict):
-        for x in v.values():
-            yield from _leaves(x)
-    elif isinstance(v, (list, tuple)):
-        for x in v:
-            yield from _leaves(x)
-    else:
-        yield v
-
-
-def unsupported_numbers(text: str, *sources: Any) -> list[str]:
-    """Numbers in a model's text that no tool result contains. A number with a unit («1 км», «+25 °C») or a
-    clock time («10:00») must match a tool value exactly; a bare small count may stand alone; «21.11» is a date."""
-    known, strict = known_numbers(*sources), known_numbers(*sources, small=False)
-    clocks = {m.group(0).zfill(5) for v in _leaves(sources) if isinstance(v, str) for m in CLOCK.finditer(v)}
-    bad = [m.group(0) for m in CLOCK.finditer(text) if m.group(0).zfill(5) not in clocks]
-    rest = CLOCK.sub(" ", text)
-    for m in NUMBER.finditer(rest):
-        token = m.group(0).replace(",", ".")
-        pool = strict if UNIT.match(rest[m.end():]) else known
-        if token in pool or f"{float(token):g}" in pool:
-            continue
-        if "." in token and not UNIT.match(rest[m.end():]) and all(
-                part.lstrip("0") in known or part in known for part in token.split(".")):
-            continue   # 21.11 = day.month
-        bad.append(m.group(0))
-    return bad
-
-
 async def read_with_model(llm: LLM, text: str, today: date) -> dict[str, Any]:
     """The one model call of understanding: free text -> the model's raw reading (ParsedRequest as a dict)."""
     system = PARSE_SYSTEM.format(today=today.isoformat(), weekday=UA_WEEKDAYS[today.weekday()],
@@ -371,6 +322,12 @@ def interpret(raw: dict[str, Any], text: str, today: date) -> tuple[dict[str, An
     of the text (understanding.refine). No model call, so the evaluation can replay saved readings."""
     d, notes = sanitise_request(dict(raw))
     d, checked = refine(d, text, today)
+    for key, (lo, hi) in LIMIT_BOUNDS.items():   # again after refine: the text may have brought one back
+        v = d.get(key)
+        if v is not None and not lo <= v <= hi:
+            checked.append(f"Обмеження {v:g} ({LIMIT_NAME_UA.get(key, key)}) поза межами {lo}–{hi}, які приймає "
+                           "перевірка маршрутів, тому не враховую; напишіть інше значення, якщо воно важливе.")
+            d[key] = None
     missing = [k for k in MISSING_UA if d.get(k) is None]
     return d, notes + checked, missing
 
@@ -783,7 +740,8 @@ def build_graph(links: McpLinks, llm: LLM):
         }
         try:
             text = await llm.text("Ти помічник пластового провідника. Напиши висновок українською, 3-5 речень, "
-                            "лише з наданих фактів, без нових чисел. Якщо правила DRAFT — скажи, що їх треба "
+                            "лише з наданих фактів. Не пиши жодних цифр: числа (км, дати, температури, години) план показує сам, "
+                            "а ти пиши словами, що головне і що робити. Якщо правила DRAFT — скажи, що їх треба "
                             "затвердити. Статус attention — план валідний, але назви головні попередження й що з ними "
                             "робити. Якщо статус risky або failed — чітко скажи, що план не рекомендований без змін і чому. "
                             "history — це відхилені спроби, не описуй їх як чинний план. Не згадуй чисел, дат, назв чи "
@@ -795,11 +753,8 @@ def build_graph(links: McpLinks, llm: LLM):
             print(f"    {YELLOW}модель не відповіла вчасно ({type(exc).__name__}); пишу висновок із фактів{RESET}")
             text = fallback_conclusion(state)
         else:
-            invented = unsupported_numbers(text, facts, final, state.get("weather"), state.get("supplies"),
-                                           state.get("request"), state.get("proposal"))
-            if invented:   # a number no tool gave: the model made it up, so the facts speak instead
-                print(f"    {YELLOW}у висновку моделі числа, яких немає в результатах інструментів "
-                      f"({', '.join(invented[:5])}); пишу висновок із фактів{RESET}")
+            if re.search(r"\d", text):   # numbers come from the tools only: the model writes words
+                print(f"    {YELLOW}у висновку моделі є числа; пишу висновок із фактів (числа лише з інструментів){RESET}")
                 text = fallback_conclusion(state)
         if adult_advice(final) and "дорослого" not in text:   # the escort advice is never dropped
             text = text.strip() + " " + adult_advice(final)

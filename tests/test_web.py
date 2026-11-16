@@ -25,7 +25,7 @@ from plast_agent.plan_store import list_plans, load_plan, new_id, plan_record, s
 from plast_trail.server import mcp as plast_trail_server
 from plast_web.app import create_app
 from plast_web.view import looks_technical, place_names, present
-from test_agent import GOOD, PARSED, REQUEST, FakeLLM, FakeObsidian, call, run_agent
+from test_agent import GOOD, NOTE, NOTE_ONE_ADULT, PARSED, REQUEST, FakeLLM, FakeObsidian, call, run_agent
 
 HIGH = {**GOOD, "start_date": "2026-11-21"}    # valid, but HIGH weather in the recorded forecasts
 BAD = {**GOOD, "route_id": "r1"}               # not one of the candidates
@@ -33,14 +33,14 @@ SCRIPTS = {
     "attention": (PARSED, [{**GOOD, "overnight_waypoint_ids": ["w30"]}, GOOD]),
     "risky": (PARSED, [HIGH, BAD, BAD, BAD]),
     "failed": (PARSED, [BAD, BAD, BAD, BAD]),
-    "group": ({**PARSED, "adults": 1}, [GOOD]),
+    "group": ({**PARSED, "adults": 1}, [GOOD], NOTE_ONE_ADULT),
 }
 
 
 def record_for(name: str) -> dict:
-    parsed, proposals = SCRIPTS[name]
+    parsed, proposals, *note = SCRIPTS[name]
     with contextlib.redirect_stdout(io.StringIO()):
-        state, links = run_agent(FakeLLM(parsed, proposals))
+        state, links = run_agent(FakeLLM(parsed, proposals), note[0] if note else NOTE)
     record = plan_record(state, REQUEST, "fake-model", "2026-11-16 14:05", trace=links.trace,
                          model_switches=["openrouter: HTTP 429, switched to ollama"])
     if name == "attention":   # the model's own words, with an id and a code: must not reach the page
@@ -58,7 +58,8 @@ def records() -> dict[str, dict]:
     no_forecast["id"] = new_id()
     # what Nazar's first real run showed: a supplies warning naming a tool parameter, the model writing «risky»
     _, s = call("calculate_supplies", {"section": "yunatstvo", "participants": 8, "adults": 2, "dry_nights": 1,
-                                       "day_loads": no_forecast["validation"]["days"]})
+                                       "day_loads": [{k: d[k] for k in ("km", "ascent_m", "walking_hours")}
+                                                     for d in no_forecast["validation"]["days"]]})
     no_forecast["supplies"]["warnings"] = s.structuredContent["warnings"]
     no_forecast["conclusion"] = "План має статус risky і не рекомендований до виконання без змін."
     out["no_forecast"] = no_forecast
@@ -270,6 +271,13 @@ def test_the_page_says_why_obsidian_is_not_connected():
     assert connection_cause(httpx.HTTPStatusError("401", request=request, response=httpx.Response(401, request=request))) == "key"
     assert connection_cause(ssl.SSLError("bad cert")) == "certificate"
     assert connection_cause(httpx.ConnectError("refused")) == "unreachable"
+    try:   # as httpx raises it: ConnectError on top, the TLS failure as its cause (Codex, round 2)
+        try:
+            raise ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate")
+        except ssl.SSLError as inner:
+            raise httpx.ConnectError(str(inner)) from inner
+    except httpx.ConnectError as wrapped:
+        assert connection_cause(ExceptionGroup("connect", [wrapped])) == "certificate"
     rt = Runtime()
     rt.state, rt.cause = {"obsidian": "down", "plast-trail": "ok"}, {"obsidian": "key", "plast-trail": ""}
     item = rt.status()["items"][0]

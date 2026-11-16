@@ -29,6 +29,10 @@ from plast_agent.workflow import MISSING_UA, kyiv_now, resolve_named_places, tod
 from plast_web.view import MONTHS, clean_note, fmt_date, place_names, present
 
 MAX_TEXT = 4000
+# What a message after a plan keeps from that plan when the new reading leaves it empty. Wishes, places and
+# limits are not here: «більше не хочу озера» must be able to empty them.
+KEEP_AFTER_PLAN = ("section", "participants", "adults", "days", "start_date", "start_time", "region",
+                   "date_flexibility_days")
 SECTION_OPTIONS = [("novatstvo", "новацтво (6–10 років)"), ("yunatstvo", "юнацтво (11–17)"),
                    ("senior", "старші (18+)")]
 STEPS = [   # what the leader sees while the graph runs; graph nodes map onto these
@@ -230,8 +234,8 @@ class Conversation:
             self.set_state("describe" if not self.request else "confirm")
             return
         self.emit({"type": "thinking", "on": False})
-        for key, value in (keep or {}).items():
-            if request.get(key) in (None, []) and value not in (None, []):
+        for key, value in (keep or {}).items():   # only who / when / where; wishes and limits follow the text
+            if key in KEEP_AFTER_PLAN and request.get(key) is None and value is not None:
                 request[key] = value
         self.request, self.notes = request, notes
         await self.next_step()

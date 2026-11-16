@@ -249,3 +249,47 @@ def test_the_latest_correction_wins():
     d, _, _ = interpret({"section": "yunatstvo", "participants": 10, "adults": 2, "days": 3, "start_date": "2026-11-21"},
                         "Юнацтво, 10 учасників і 2 дорослі, 3 дні з 21 листопада.\n\nВиправлення: Учасників — 12", TODAY)
     assert d["participants"] == 12
+
+
+# ------------------------------------------------------------------ independent review, second round (Codex, 16 Nov)
+def test_the_escorts_age_is_not_the_groups_age():
+    """Codex P1 (round 2): «2 дорослі віком 25 років» turned a youth group into seniors with 0 adults."""
+    from plast_agent.workflow import interpret
+    base = {"section": "yunatstvo", "participants": 10, "adults": 2, "days": 3, "start_date": "2026-11-21"}
+    d, _, missing = interpret(dict(base), "Юнацтво, 10 учасників і 2 дорослі віком 25 років, 3 дні з 21 листопада.", TODAY)
+    assert (d["section"], d["participants"], d["adults"], missing) == ("yunatstvo", 10, 2, [])
+    d, notes, _ = interpret(dict(base), "Юнацтво, 10 учасників по 20 років і 2 дорослі, 3 дні з 21 листопада.", TODAY)
+    assert d["section"] is None and any("перепитаю" in n for n in notes)   # named group vs ages: ask
+
+
+def test_facts_need_the_text_behind_them():
+    """Codex P2 (round 2): «дорослі будуть» kept the model's 2; any digit kept invented days; seniors kept 10."""
+    from plast_agent.workflow import interpret
+    d, _, missing = interpret({"section": "yunatstvo", "participants": 10, "adults": 2, "days": 3,
+                               "start_date": "2026-11-21"}, "Юнацтво, 10 учасників, дорослі будуть, 21 листопада.", TODAY)
+    assert "adults" in missing and "days" in missing
+    d, _, missing = interpret({"section": "senior", "participants": 10, "adults": 0, "days": 2,
+                               "start_date": "2026-11-21"}, "Старші, хочемо в гори на два дні 21 листопада", TODAY)
+    assert missing == ["participants"]
+    d, _, missing = interpret({"section": "senior", "participants": 2, "adults": 0, "days": 2, "start_date": "2026-11-23"},
+                              "іду я із сестрою, хочемо на говерлу піднятися 23 листопада, а 24 спуститися", TODAY)
+    assert d["days"] == 2 and not missing                       # 23 and 24 November: two days
+    d, _, _ = interpret({"section": "yunatstvo", "participants": 11, "adults": 2, "days": 2, "start_date": "2026-12-05"},
+                        "Гурток «Чайки» — 11 юначок 13–14 років, інструктор і одна мама. Вихід 5 грудня на 2 дні.", TODAY)
+    assert d["adults"] == 2                                     # named one by one
+
+
+def test_corrections_after_a_plan_replace_what_they_say():
+    """Codex P2 (round 2): «на завтра», a stricter limit and «більше не хочу озера» were lost."""
+    from plast_agent.workflow import interpret
+    first = ("Юнацтво, 10 учасників і 2 дорослі, 3 дні з 21 листопада, не більше 12 км на день, хочемо озеро.")
+    base = {"section": "yunatstvo", "participants": 10, "adults": 2, "days": 3, "start_date": "2026-11-21",
+            "max_km_per_day": 12, "must_include": ["lake"]}
+    d, _, _ = interpret(dict(base), first + "\n\nЗміна після плану: Зміни старт на завтра", TODAY)
+    assert d["start_date"] == "2026-11-16"                      # TODAY is 15 Nov
+    d, _, _ = interpret(dict(base), first + "\n\nЗміна після плану: Тепер не більше 6 км на день", TODAY)
+    assert d["max_km_per_day"] == 6
+    d, _, _ = interpret(dict(base), first + "\n\nЗміна після плану: Більше не хочу озера", TODAY)
+    assert d["must_include"] == []
+    d, notes, _ = interpret({**base, "max_km_per_day": None}, first.replace("12 км", "0.5 км"), TODAY)
+    assert d["max_km_per_day"] is None and any("поза межами" in n for n in notes)   # bounds after refine

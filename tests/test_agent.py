@@ -32,11 +32,16 @@ GOOD = {"route_id": "r8613349", "overnight_waypoint_ids": ["w56", "w30"], "start
         "reasoning": "рівні дні"}
 
 
+# The demo note with one adult: for the tests of the escort advice (the text must say what the reading says).
+NOTE_ONE_ADULT = NOTE.replace("і 2 дорослі виховники", "і 1 дорослий виховник")
+
+
 class FakeObsidian:
     """Answers vault_read / vault_list / vault_write / vault_append like the plugin does (JSON text)."""
 
-    def __init__(self) -> None:
+    def __init__(self, note: str = NOTE) -> None:
         self.written: dict[str, str] = {}
+        self.note = note
 
     async def call_tool(self, tool: str, args: dict) -> CallToolResult:
         if tool == "vault_read" and args["path"] in self.written:  # notes saved during this run
@@ -45,7 +50,7 @@ class FakeObsidian:
             if args["path"] != REQUEST:
                 return CallToolResult(content=[TextContent(type="text", text=f"File not found: {args['path']}")],
                                       isError=True)
-            body = {"content": NOTE, "path": REQUEST}
+            body = {"content": self.note, "path": REQUEST}
         elif tool == "vault_list":
             body = {"files": [Path(REQUEST).name]}
         elif tool == "vault_append":  # like the plugin: add to the end, create if missing
@@ -79,13 +84,13 @@ class FakeLLM:
         return "Висновок."
 
 
-def run_agent(llm: FakeLLM) -> tuple[dict, McpLinks]:
+def run_agent(llm: FakeLLM, note: str = NOTE) -> tuple[dict, McpLinks]:
     settings = SimpleNamespace(obsidian_mcp_url="https://obsidian.test/mcp/", plast_trail_url="memory://plast-trail")
 
     async def go():
         async with create_connected_server_and_client_session(plast_trail_server) as session:
             links = McpLinks(settings)
-            links.sessions = {"plast-trail": session, "obsidian": FakeObsidian()}
+            links.sessions = {"plast-trail": session, "obsidian": FakeObsidian(note)}
             state = await build_graph(links, llm).ainvoke({"request_path": REQUEST}, {"recursion_limit": 80})
             return state, links
 
@@ -192,10 +197,11 @@ def test_outputs_are_typed_and_chain_into_supplies():
     w = w.structuredContent
     assert all(t["unit"] in ("wmo_code", "m/s", "mm", "°C") for d in w["days"] for t in d["triggers"])
     assert w["coldest_night_c"] == min(d["night_spot_min_c"] for d in w["days"] if d["night_spot_min_c"] is not None)
+    loads = [{k: d[k] for k in ("km", "ascent_m", "walking_hours")} for d in v["days"]]
     _, s = call("calculate_supplies", {"section": "yunatstvo", "participants": 10, "adults": 2,
-                                       "day_loads": v["days"], "dry_nights": v["dry_nights"],
+                                       "day_loads": loads, "dry_nights": v["dry_nights"],
                                        "night_min_c": w["coldest_night_c"]})
-    assert not s.isError and s.structuredContent["num_days"] == 3        # days[] can be passed as-is
+    assert not s.isError and s.structuredContent["num_days"] == 3        # the three numbers of each day chain in
 
 
 def test_dry_nights_cannot_exceed_nights():
@@ -445,7 +451,7 @@ def test_too_few_adults_gives_the_full_plan_and_asks_to_fix_the_group():
     """Only the group breaks the rules: the route is fine, so the plan is finished (weather, supplies, picture)
     with status `group`, after one attempt: another route cannot add an adult."""
     llm = FakeLLM({**PARSED, "adults": 1}, [GOOD])
-    state, _ = run_agent(llm)
+    state, _ = run_agent(llm, NOTE_ONE_ADULT)
     codes = {x["code"] for x in state["validation"]["violations"] if x["severity"] == "error"}
     assert codes and codes <= {"TOO_FEW_ADULTS", "ADULT_RATIO"}
     assert len(state["attempts"]) == 1 and state["status"] == "group"
@@ -624,7 +630,7 @@ def test_high_weather_is_never_hidden_by_the_escort_advice():
     """Codex P1: 1 adult + a high-risk forecast came out as «Готово · порада щодо супроводу»."""
     from plast_agent.render import render_plan
     high, bad = {**GOOD, "start_date": "2026-11-21"}, {**GOOD, "route_id": "r1"}
-    state, _ = run_agent(FakeLLM({**PARSED, "adults": 1}, [high, bad, bad, bad]))
+    state, _ = run_agent(FakeLLM({**PARSED, "adults": 1}, [high, bad, bad, bad]), NOTE_ONE_ADULT)
     assert state["weather"]["overall_risk"] == "high" and state["status"] == "risky"
     note = render_plan(state, REQUEST, "fake", "2026-11-16 10:00")
     assert "НЕ рекомендовано" in note and "**Супровід (порада):**" in note    # both, the weather first
@@ -645,18 +651,24 @@ def test_status_rule_puts_safety_first():
 
 
 def test_a_conclusion_with_invented_numbers_is_replaced_by_the_facts():
-    """Codex P2: «Безпечний маршрут, 1 км, повертайтеся о 10:00, прогноз +25 °C» went into the plan as is."""
-    from plast_agent.workflow import unsupported_numbers
+    """Codex P2 (twice): «1 км … +25 °C» and then «+10.4 °C» for a −10.4 °C night went into the plan. Numbers
+    now come from the tools only: a model paragraph with any digit is replaced by the factual one."""
+    class Writer(FakeLLM):
+        def __init__(self, paragraph):
+            super().__init__(PARSED, [GOOD])
+            self.paragraph = paragraph
 
-    class Inventive(FakeLLM):
         async def text(self, system, user):
             self.calls += 1
-            return "Безпечний маршрут, 1 км, повертайтеся о 10:00, прогноз +25 °C."
-    state, _ = run_agent(Inventive(PARSED, [GOOD]))
-    assert "+25" not in state["conclusion"] and state["conclusion"].startswith("Маршрут «")
-    facts = {"km": 11.35, "arrival": "14:12", "start": "2026-11-21", "night": -10.4}
-    assert unsupported_numbers("11.3 км, прихід о 14:12, старт 21.11, ніч до −10.4 °C, 2 спроби", facts) == []
-    assert unsupported_numbers("1 км, о 10:00, +25 °C", facts) == ["10:00", "1", "25"]
+            return self.paragraph
+    for invented in ("Безпечний маршрут, 1 км, повертайтеся о 10:00, прогноз +25 °C.", "Ніч до +10.4 °C, це тепло."):
+        state, _ = run_agent(Writer(invented))
+        assert state["conclusion"].startswith("Маршрут «") and "+10.4" not in state["conclusion"]
+        assert "−10.4" in state["conclusion"] or "-10.4" in state["conclusion"]     # the real frost, from the tool
+    words = "Другий день найважчий: вийдіть раніше й візьміть зимові спальники."
+    state, _ = run_agent(Writer(words))
+    assert state["conclusion"] == words                                               # words only: kept as written
+
 
 
 def test_unknown_arguments_and_schema_failures_are_structured_errors():
@@ -670,7 +682,16 @@ def test_unknown_arguments_and_schema_failures_are_structured_errors():
         text = res.content[0].text
         err = json.loads(text[text.index("{"):])["error"]
         assert res.isError and err["code"] == "INVALID_INPUT" and err["hint"]
-    _, ok = call("calculate_supplies", {"section": "yunatstvo", "participants": 10, "adults": 2,
-                                        "day_loads": [{"km": 5, "ascent_m": 100, "walking_hours": 2, "day": 1,
-                                                       "start": {"id": "w0"}}]})
-    assert not ok.isError                     # validate_hike_plan's days[] still pass as they are
+    _, nested = call("calculate_supplies", {"section": "yunatstvo", "participants": 10, "adults": 2,
+                                            "day_loads": [{"km": 5, "ascent_m": 100, "walking_hours": 2, "kmm": 1}]})
+    assert nested.isError and "INVALID_INPUT" in nested.content[0].text     # nested fields are strict too (round 2)
+    assert all(t.outputSchema.get("additionalProperties") is False for t in tools.values())
+
+
+def test_too_many_dry_nights_is_invalid_input_not_a_server_bug():
+    """Found while fixing the second review: the tool raised an already wrapped error, so the caller saw
+    INTERNAL_ERROR («server bug») for a plain input mistake."""
+    _, res = call("calculate_supplies", {"section": "yunatstvo", "participants": 8, "adults": 2, "dry_nights": 1,
+                                         "day_loads": [{"km": 5, "ascent_m": 100, "walking_hours": 2}]})
+    text = res.content[0].text
+    assert res.isError and json.loads(text[text.index("{"):])["error"]["code"] == "INVALID_INPUT"
