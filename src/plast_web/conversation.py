@@ -135,7 +135,8 @@ class Conversation:
         self.state = state
         placeholder = {"describe": "Опишіть мандрівку: хто, коли, куди, що хочете побачити…",
                        "asking": "Ваша відповідь…", "confirm": "Або напишіть, що виправити…",
-                       "busy": "Зачекайте, я працюю…", "done": "Опишіть наступну мандрівку або спитайте ще…"}
+                       "busy": "Зачекайте, я працюю…",
+                       "done": "Змініть план («а через Говерлу?», «на 2 дні») або натисніть «Новий план»…"}
         self.emit({"type": "state", "state": state, "placeholder": placeholder.get(state, "")})
 
     def since(self, seq: int) -> list[dict[str, Any]]:
@@ -181,6 +182,14 @@ class Conversation:
         self.task = asyncio.create_task(run())
 
     async def on_text(self, text: str) -> None:
+        if self.state == "done" and self.request:   # «а на Говерлу ми зайдем?» changes the plan just made
+            before, keep = self.text, dict(self.request)
+            self.reset()
+            self.text = before + f"\n\nЗміна після плану: {text}"
+            self.asked_region = True
+            self.trace_from = len(self.runtime.links.trace) if self.runtime.links else 0
+            await self.read("Змінюю план з урахуванням цього…", keep=keep)
+            return
         if self.state in ("describe", "done"):
             self.reset()
             self.text = text
@@ -206,7 +215,9 @@ class Conversation:
             self.llm = await asyncio.to_thread(cli.make_llm, self.runtime.settings)   # prints the quota
         return self.llm
 
-    async def read(self, label: str) -> None:
+    async def read(self, label: str, keep: dict[str, Any] | None = None) -> None:
+        """The model reads the whole text. keep: the request of the previous plan; what the model leaves empty
+        now (the group, the people, the dates) is taken from it, so a follow-up does not ask everything again."""
         self.set_state("busy")
         self.emit({"type": "thinking", "on": True, "label": label})
         try:
@@ -220,6 +231,9 @@ class Conversation:
             self.set_state("describe" if not self.request else "confirm")
             return
         self.emit({"type": "thinking", "on": False})
+        for key, value in (keep or {}).items():
+            if request.get(key) in (None, []) and value not in (None, []):
+                request[key] = value
         self.request, self.notes = request, notes
         await self.next_step()
 

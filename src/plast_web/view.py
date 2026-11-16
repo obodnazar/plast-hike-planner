@@ -55,10 +55,10 @@ OUTCOME_UA = [   # the agent's attempt outcomes (English, for the log) -> a line
     ("rejected by the agent check", "агент відхилив ще до перевірки: {why}"),
     ("rejected by the tool", "інструмент не прийняв план"),
     ("invalid", "не пройшла норми безпеки"),
-    ("valid but HIGH weather", "пройшла норми, але погода ризикована: шукаю інший варіант"),
-    ("valid, weather unknown", "пройшла норми; прогнозу на ці дати ще немає"),
-    ("valid, weather risk", "пройшла норми, погодний ризик {risk}"),
-    ("valid", "пройшла норми безпеки"),
+    ("valid but HIGH weather", "маршрут пройшов норми, але погода ризикована: шукаю інший варіант"),
+    ("valid, weather unknown", "маршрут пройшов норми; прогнозу на ці дати ще немає"),
+    ("valid, weather risk", "маршрут пройшов норми, погодний ризик {risk}"),
+    ("valid", "маршрут пройшов норми безпеки"),
 ]
 REJECT_WHY = [   # the agent's own check (feedback is English, for the model) -> the reason in Ukrainian
     ("night spot(s) are needed", "не та кількість ночівель"),

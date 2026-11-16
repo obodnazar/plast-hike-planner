@@ -107,6 +107,7 @@ def test_parse_days(text, expected):
 
 def test_short_answers():
     assert parse_count("я думаю 1 буду") == 1 and parse_count("двоє") == 2 and parse_count("10 + 2") is None
+    assert parse_count("6-7") == 7 and parse_count("десь 6–7 дітей") == 7 and parse_count("шість або сім") == 7
     assert dont_care("не важливо, хочемо вийти 19 листопада") and dont_care("та всеодно") and not dont_care("2")
     value, note, _ = parse_answer("days", "не важливо, хочемо вийти 19 листопада", TODAY)
     assert value == 2 and "припущення" in note

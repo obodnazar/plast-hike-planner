@@ -126,9 +126,19 @@ def people_fallback(text: str) -> int | None:
     return 2 if ME_WITH_ONE.search(t) else None
 
 
+RANGE = re.compile(B + NUM + r"\s*(?:[-–—]|або|чи)\s*" + NUM + E)
+
+
 def parse_count(answer: str) -> int | None:
-    """A short answer with one number: «2», «я думаю 1 буду», «двоє»."""
-    numbers = {to_int(m.group(1)) for m in re.finditer(B + NUM + E, norm(answer))} - {None}
+    """A short answer with one number: «2», «я думаю 1 буду», «двоє». A range («6-7», «шість або сім») counts as
+    its larger end: for people that is the safe side (enough food, enough adults)."""
+    t = norm(answer)
+    rng = RANGE.search(t)
+    if rng:
+        low, high = to_int(rng.group(1)), to_int(rng.group(2))
+        if low is not None and high is not None and low < high:
+            t = t[:rng.start()] + str(high) + t[rng.end():]
+    numbers = {to_int(m.group(1)) for m in re.finditer(B + NUM + E, t)} - {None}
     return numbers.pop() if len(numbers) == 1 else None
 
 

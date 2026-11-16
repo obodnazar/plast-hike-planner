@@ -17,8 +17,8 @@ from typing import Any, Awaitable, Callable
 from plast_agent.llm import LLM
 from plast_agent.mcp_links import McpLinks
 from plast_agent.render import request_lines
-from plast_agent.understanding import (dont_care, group_consistency, next_weekday, norm, parse_count, parse_date,
-                                       parse_days, regions_named)
+from plast_agent.understanding import (RANGE, dont_care, group_consistency, next_weekday, norm, parse_count,
+                                       parse_date, parse_days, regions_named)
 from plast_agent.workflow import MISSING_UA, resolve_named_places, understand
 
 BOLD, CYAN, YELLOW, RESET = "\033[1m", "\033[36m", "\033[33m", "\033[0m"
@@ -101,6 +101,9 @@ def parse_answer(key: str, answer: str, today: date) -> tuple[Any, str | None, d
         n = parse_count(answer)
         if n is None and key == "adults" and norm(answer).strip(" .!") in ("я", "тільки я", "лише я", "я сам", "я сама"):
             n = 1
+        if n is not None and RANGE.search(norm(answer)):
+            return n, (f"{LABELS[key]}: {n} — з «{answer.strip()}» беру більше число, щоб вистачило запасів і "
+                       "дорослих; змініть, якщо треба."), {}
         return n, None, {}
     if key == "days":
         n = parse_days(answer) or parse_count(answer)
