@@ -83,7 +83,7 @@ TOOL_NOTES: dict[str, dict[str, Any]] = {
             ("Unknown route id", "`isError: true`, code `ROUTE_NOT_FOUND`, hint shows the id format"),
             ("Waypoint id not on the route", "code `WAYPOINT_NOT_FOUND`, hint gives the valid range w0..wN"),
             ("Night spots out of km order, or start/finish used as a night spot", "code `WAYPOINT_ORDER`"),
-            ("Bad `start_time`", "schema pattern `^\\d{2}:\\d{2}$`, or code `INVALID_INPUT` for 24:99"),
+            ("Bad `start_time`", "code `INVALID_INPUT` (fails the schema pattern `^\\d{2}:\\d{2}$`, or a time such as 24:99)"),
             ("Schema violations (participants=0, >6 night spots, id not matching `^r\\d+$`/`^w\\d+$`)",
              "`isError: true`, pydantic validation message"),
             ("Plan breaks rules", "**not an error**: `valid: false` with `violations[]` (severity error/warning)"),
@@ -317,12 +317,12 @@ async def custom_contracts() -> list[str]:
          "- **Process:** separate, started with `uv run plast-trail` (streamable HTTP, `http://127.0.0.1:8770/mcp`; `--stdio` also available).",
          "- **Data:** `data/routes.json` (121 OSM routes + SRTM heights), `data/places.json` (1494 named places, "
          "the gazetteer), `data/rules.yaml` (norms with sources, approved for the project 16.11.2026), "
-         "Open-Meteo forecasts (live / record / replay).",
+         "Open-Meteo forecasts (`WEATHER_MODE` live / replay; recording is `scripts/record_weather.py`).",
          "- **Server instructions** (sent at `initialize`) describe the typical flow: resolve place names → find → validate (loop) → weather (loop) → supplies → (optional) route profile for a picture.", "",
          "## Error model (all tools)", "",
          "| Situation | What the caller gets |", "|---|---|",
          "| Domain failure (unknown route, missing fixture, …) | `isError: true`; text = `Error executing tool <name>: ` (prefix added by FastMCP) + `{\"error\": {\"code\": \"...\", \"message\": \"...\", \"hint\": \"...\"}}`. The hint says what the caller (model) should do next |",
-         "| Arguments violate the input schema (wrong type, out of range, bad pattern, unknown field inside `group_limits`) | `isError: true`; FastMCP/pydantic validation message, no code; the tool body never runs. Unknown top-level arguments are ignored by FastMCP |",
+         "| Arguments violate the input schema (wrong type, out of range, bad pattern, unknown argument or unknown field inside `group_limits`) | `isError: true`; the same JSON shape with code `INVALID_INPUT` and the failing fields in the message; the tool body never runs. Every input schema has `additionalProperties: false`; only the items of `calculate_supplies.day_loads` accept extra fields, so `validate_hike_plan` `days[]` can be passed as they are |",
          "| Unexpected bug | `isError: true`; code `INTERNAL_ERROR`; stack trace only in the server log |",
          "| Valid request, nothing found / plan breaks rules | **success** with an empty list (`routes: []`) or `valid: false` + `violations` |",
          "",

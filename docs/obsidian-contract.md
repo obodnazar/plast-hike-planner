@@ -109,7 +109,7 @@ A Plast leader already keeps notes; Obsidian is where the request is written in 
 |---|---|
 | Role in this project | Final step: writes the finished plan note to `Плани/<request> — план.md` (route table, weather, supplies, documents checklist, the agent's decision log). |
 | Error conditions | Obsidian unreachable at write time → the agent saves the note to `out/` locally and reports it. Binary extensions or NUL bytes are refused by the plugin. |
-| Side effects | **Creates or overwrites** a file in the vault (parent folders created). The agent writes only under `Плани/`. |
+| Side effects | **Creates or overwrites** a file in the vault (parent folders created). The agent writes the plan, its picture and track under `Плани/`, and in the dialogue modes (`--chat`, the web chat) the new request note under `Запити/`. |
 
 **Model-facing description (exact):**
 
