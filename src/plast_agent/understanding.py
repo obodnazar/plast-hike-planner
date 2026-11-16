@@ -55,14 +55,17 @@ ADULTS = r"(?:виховни\w*|доросл\w*|взросл\w*|провідни
 NOT_AGE = (r"(?!\s*[-–—]\s*\d)(?!\s*(?:і|та|,)\s*\d+\s*(?:рок|рік))(?!\s*(?:рок|рік|лєт|лет|р\.))"
            r"(?!\s*(?:кг|км|м|год|л|%)(?![\w']))")
 COUNT_BEFORE = re.compile(B + NUM + E + r"\s+" + PEOPLE)            # «10 юнаків», «двоє дітей»
-COUNT_AFTER = re.compile(B + PEOPLE + r"\s*[:\-—]?\s*" + NUM + E + NOT_AGE)   # «Новачків 10», not «юнаків 13 років»
+# words that may stand between the noun and its number in a change: «учасників буде 20», «дорослих тепер 1»
+FILL = r"\s*[:\-—]?\s*(?:(?:буде|будуть|є|стане|стало|тепер|вже|лише|тільки|на)\s+)*"
+NOT_MEASURE = r"(?!\s*(?:дн|день|ноч|тиж|км|год|кг|м\b|рок|рік))"
+COUNT_AFTER = re.compile(B + PEOPLE + FILL + NUM + E + NOT_AGE + NOT_MEASURE)   # «Новачків 10», not «юнаків 13 років»
 TOGETHER = re.compile(B + NUM + E + r"\s+(?:людей\s+|осіб\s+)?(?:разом|включно)\s+(?:з|із|зі)\s+" + NUM + E +
                       r"\s+" + ADULTS)                               # «12 разом з двома виховниками»
 NO_ADULTS = re.compile(r"без\s+(?:доросл|супровод|виховник|провідник)|" + B + r"0\s+доросл|дорослих\s*[:\-—]?\s*0" + E)
 
 
 ADULT_BEFORE = re.compile(B + NUM + E + r"\s+" + ADULTS + r"(?:\s+" + ADULTS + r")?")   # «2 дорослі виховники»
-ADULT_AFTER = re.compile(B + ADULTS + r"\s*[:\-—]?\s*" + NUM + E + NOT_AGE)                # «дорослих 2», «батьків 4»
+ADULT_AFTER = re.compile(B + ADULTS + FILL + NUM + E + NOT_AGE + NOT_MEASURE)                # «дорослих 2», «батьків 4»
 ADULT_WORD = re.compile(B + ADULTS + r"|" + B + r"(?:інструктор|мам|тат)\w*")
 AND_ME = re.compile(PEOPLE + r"\s+(?:і|та|плюс)\s+я" + E)                                # «8 юнаків і я»
 ME_WITH_GROUP = re.compile(B + r"я\s+(?:і|та|з|із|зі)\s+(?:сво\w+\s+)?(?:юнацтв|юнак|юнач|новацтв|новак|новач|гурт|ро[єю]|"
@@ -385,6 +388,8 @@ MONTHS = {"січ": 1, "лют": 2, "берез": 3, "квіт": 4, "трав": 
 MONTH = r"(" + "|".join(MONTHS) + r")\w*"
 WEEKDAYS = {0: r"понеділ\w*|понедельник", 1: r"вівтор\w*|вторник", 2: r"середу|середа|среду",
             3: r"четвер|четверг", 4: r"п'ятниц\w*|пятниц\w*", 5: r"субот\w*|суббот\w*", 6: r"неділ\w*|воскресен\w*"}
+YEAR = r"(?:\s+(20\d{2})(?:\s*(?:року|рік|р\.))?)?"            # «5 грудня 2027 року»
+ISO_DATE = re.compile(r"(?<!\d)(20\d{2})-(\d{2})-(\d{2})(?!\d)")   # «2026-12-05»
 DAY_SUFFIX = r"(?:\s*-?\s*(?:го|ого|е))?"
 SHIFT = re.compile(r"зсун|посун|перен|зміст|через" + E)
 FLEX_WORDS = re.compile(r"зсун|посун|перен|зміст|пізніше|гнучк|±|\+/-|не\s+жорстк")
@@ -427,16 +432,19 @@ def parse_date(text: str, today: date) -> date | None:
     """The first day of the trip as people write it: «21.11», «21 листопада», «з 27 по 29 листопада»,
     «28-го», «в суботу», «завтра», «через тиждень», «на вихідних». None if the text has no date."""
     t = norm(text)
-    m = re.search(r"(?<!\d)(\d{1,2})\s*[-–]\s*\d{1,2}\s+" + MONTH, t) or \
-        re.search(r"з\s+(\d{1,2})" + DAY_SUFFIX + r"\s+(?:по|до)\s+\d{1,2}" + DAY_SUFFIX + r"\s+" + MONTH, t)
+    m = ISO_DATE.search(t)
     if m:
-        return _nearest(today, int(m.group(1)), _month_of(m.group(2)))
+        return _safe(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    m = re.search(r"(?<!\d)(\d{1,2})\s*[-–]\s*\d{1,2}\s+" + MONTH + YEAR, t) or \
+        re.search(r"з\s+(\d{1,2})" + DAY_SUFFIX + r"\s+(?:по|до)\s+\d{1,2}" + DAY_SUFFIX + r"\s+" + MONTH + YEAR, t)
+    if m:
+        return _nearest(today, int(m.group(1)), _month_of(m.group(2)), int(m.group(3)) if m.group(3) else None)
     m = re.search(r"(?<![\d.,])(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?(?!\d)(?![.,]\d)(?!\s*(?:км|м|год|кг|л)" + E + ")", t)
     if m and 1 <= int(m.group(2)) <= 12:
         return _nearest(today, int(m.group(1)), int(m.group(2)), int(m.group(3)) if m.group(3) else None)
-    m = re.search(r"(?<!\d)(\d{1,2})" + DAY_SUFFIX + r"\s+" + MONTH, t)
+    m = re.search(r"(?<!\d)(\d{1,2})" + DAY_SUFFIX + r"\s+" + MONTH + YEAR, t)
     if m:
-        return _nearest(today, int(m.group(1)), _month_of(m.group(2)))
+        return _nearest(today, int(m.group(1)), _month_of(m.group(2)), int(m.group(3)) if m.group(3) else None)
     m = re.search(r"(?<!\d)(\d{1,2})\s*-?\s*(?:го|ого)" + E + r"|(?<!\d)(\d{1,2})\s+числа", t)
     if m:
         return _day_only(today, int(m.group(1) or m.group(2)))
@@ -477,15 +485,18 @@ def explicit_date(text: str, today: date) -> date | None:
     if any(PAST.search(part) and re.search(r"\d", part) for part in re.split(r"(?<=[.!?\n])", t)
            if re.search(MONTH, part) or re.search(r"\d{1,2}[./]\d{1,2}", part)):
         return None   # a date in a sentence about an earlier trip: leave it to the model
-    m = re.search(r"(?<!\d)(\d{1,2})\s*[-–]\s*\d{1,2}\s+" + MONTH, t) or \
-        re.search(r"з\s+(\d{1,2})" + DAY_SUFFIX + r"\s+(?:по|до)\s+\d{1,2}" + DAY_SUFFIX + r"\s+" + MONTH, t)
+    m = ISO_DATE.search(t)
     if m:
-        return _nearest(today, int(m.group(1)), _month_of(m.group(2)))
+        return _safe(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    m = re.search(r"(?<!\d)(\d{1,2})\s*[-–]\s*\d{1,2}\s+" + MONTH + YEAR, t) or \
+        re.search(r"з\s+(\d{1,2})" + DAY_SUFFIX + r"\s+(?:по|до)\s+\d{1,2}" + DAY_SUFFIX + r"\s+" + MONTH + YEAR, t)
+    if m:
+        return _nearest(today, int(m.group(1)), _month_of(m.group(2)), int(m.group(3)) if m.group(3) else None)
     m = re.search(r"(?<![\d.,])(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?(?!\d)(?![.,]\d)(?!\s*(?:км|м|год|кг|л)" + E + ")", t)
     if m and 1 <= int(m.group(2)) <= 12:
         return _nearest(today, int(m.group(1)), int(m.group(2)), int(m.group(3)) if m.group(3) else None)
-    m = re.search(r"(?<!\d)(\d{1,2})" + DAY_SUFFIX + r"\s+" + MONTH, t)
-    return _nearest(today, int(m.group(1)), _month_of(m.group(2))) if m else None
+    m = re.search(r"(?<!\d)(\d{1,2})" + DAY_SUFFIX + r"\s+" + MONTH + YEAR, t)
+    return _nearest(today, int(m.group(1)), _month_of(m.group(2)), int(m.group(3)) if m.group(3) else None) if m else None
 
 
 def parse_shift(text: str) -> int | None:
@@ -579,25 +590,72 @@ def latest(fn, text: str, *args):
     return None
 
 
+def relative_date(text: str, today: date) -> date | None:
+    """Only the words with one meaning: «сьогодні», «завтра», «післязавтра», «через 3 дні / тиждень»."""
+    t = present_text(text)
+    for word, shift in (("післязавтра", 2), ("послезавтра", 2), ("завтра", 1), ("сьогодні", 0), ("сегодня", 0)):
+        if re.search(B + word + E, t):
+            return today + timedelta(days=shift)
+    m = re.search(r"через\s+" + NUM + E + r"\s+(дн|тиж)", t)
+    if m and to_int(m.group(1)):
+        return today + timedelta(days=to_int(m.group(1)) * (7 if m.group(2) == "тиж" else 1))
+    return today + timedelta(days=7) if re.search(r"через\s+тиждень", t) else None
+
+
 def latest_date(text: str, today: date) -> date | None:
     """The start date from the latest part that states one: a written date anywhere, a relative one
     («на завтра», «в суботу») only in a correction, where it replaces the earlier date."""
     parts = PARTS.split(text)
     for i in range(len(parts) - 1, -1, -1):
-        found = explicit_date(parts[i], today) or (parse_date(parts[i], today) if i > 0 else None)
+        found = explicit_date(parts[i], today) or (parse_date(parts[i], today) if i > 0 else relative_date(parts[i], today))
         if found:
             return found
     return None
 
 
-def latest_people(text: str) -> tuple[int | None, int | None]:
-    """people_count, each number from the latest part that states it."""
+RELATIVE_CHANGE = re.compile(B + r"(?:ще|додай\w*|додамо|плюс|мінус|менше\s+на|більше\s+на|на\s+\w+\s+(?:більше|менше))" + E)
+PARTICIPANT_WORD = re.compile(B + PEOPLE)
+
+
+def latest_people(text: str) -> tuple[int | None, int | None, bool, bool]:
+    """people_count, each number from the latest part that states it. The two flags say a later correction
+    talked about that number but code could not read it («додай ще двох»): then no older number is taken,
+    and the reading must be backed by that correction or asked again."""
     participants = adults = None
-    for part in reversed(PARTS.split(text)):
+    p_open = a_open = False
+    parts = PARTS.split(text)
+    for i in range(len(parts) - 1, -1, -1):
+        part = parts[i]
         p, a = people_count(part)
-        participants = p if participants is None else participants
-        adults = a if adults is None else adults
-    return participants, adults
+        relative = i > 0 and bool(RELATIVE_CHANGE.search(norm(part)))
+        if participants is None and not p_open:
+            if p is not None and not relative:
+                participants = p
+            elif i > 0 and PARTICIPANT_WORD.search(norm(part)):
+                p_open = True
+        if adults is None and not a_open:
+            if a is not None and not relative:
+                adults = a
+            elif i > 0 and ADULT_WORD.search(norm(part)):
+                a_open = True
+    return participants, adults, p_open, a_open
+
+
+def correction_numbers(text: str, rx: re.Pattern, adults: bool = False) -> set[int]:
+    """What a model reading may take from the corrections that talk about these people: their numbers, and for
+    «додай ще двох» the earlier count plus or minus that number."""
+    parts = PARTS.split(text)
+    out: set[int] = set()
+    for i, part in enumerate(parts[1:], start=1):
+        if not rx.search(norm(part)):
+            continue
+        nums = {n for m in re.finditer(B + NUM + E, norm(part)) if (n := to_int(m.group(1))) is not None}
+        out |= nums
+        if RELATIVE_CHANGE.search(norm(part)):
+            before = latest_people("\n".join(parts[:i]))[1 if adults else 0]
+            if before is not None:
+                out |= {before + n for n in nums} | {before - n for n in nums if before - n >= 0}
+    return out
 
 
 # ------------------------------------------------------------------ the check after the model
@@ -637,15 +695,15 @@ def refine(d: dict[str, Any], text: str, today: date) -> tuple[dict[str, Any], l
                      f"{d['date_flexibility_days']} дн.).")
         d["date_flexibility_days"] = 0
 
-    participants, adults = latest_people(text)
-    if participants is None:
+    participants, adults, p_open, a_open = latest_people(text)
+    if participants is None and not p_open:
         participants = latest(people_fallback, text)
     if participants is not None and participants != d.get("participants"):
         if d.get("participants") is not None:
             notes.append(f"Учасників: {participants} — так написано в тексті (модель прочитала {d['participants']}).")
         d["participants"] = participants
     elif participants is None and d.get("participants") is not None \
-            and d["participants"] not in people_candidates(text):
+            and d["participants"] not in (correction_numbers(text, PARTICIPANT_WORD) if p_open else people_candidates(text)):
         # the model's number with nothing in the text behind it: ask instead of guessing
         notes.append(f"Учасників: у тексті числа не знайдено, тому перепитаю (модель вказала {d['participants']}).")
         d["participants"] = None
@@ -653,8 +711,8 @@ def refine(d: dict[str, Any], text: str, today: date) -> tuple[dict[str, Any], l
         if d.get("adults") is not None:
             notes.append(f"Дорослих: {adults} — так написано в тексті (модель прочитала {d['adults']}).")
         d["adults"] = adults
-    elif adults is None and d.get("adults") and d.get("section") in ("novatstvo", "yunatstvo") \
-            and d["adults"] not in adult_candidates(text):
+    elif adults is None and d.get("adults") is not None and d.get("section") in ("novatstvo", "yunatstvo") \
+            and d["adults"] not in (correction_numbers(text, ADULT_WORD, adults=True) if a_open else adult_candidates(text)):
         notes.append(f"Дорослих: у тексті числа не знайдено, тому перепитаю (модель вказала {d['adults']}).")
         d["adults"] = None
     notes += group_consistency(d, text)
@@ -690,6 +748,14 @@ def refine(d: dict[str, Any], text: str, today: date) -> tuple[dict[str, Any], l
             d[field] = new
         elif value is not None and not found:
             notes.append(f"{LIMIT_UA[field]} {value:g} у тексті не знайдено, тому не враховую.")
+            d[field] = None
+
+    # weighed rucksacks: only a weight the text states («учасник — 5 кг»), never a model's guess
+    kg_in_text = {float(x.replace(",", ".")) for x in re.findall(r"(\d{1,2}(?:[.,]\d)?)\s*кг", present_text(text))}
+    for field, who in (("participant_base_gear_kg", "учасника"), ("adult_base_gear_kg", "дорослого")):
+        value = d.get(field)
+        if value is not None and float(value) not in kg_in_text:
+            notes.append(f"Вага спорядження {who} {value:g} кг у тексті не знайдено, тому не враховую.")
             d[field] = None
 
     named = regions_named(text)

@@ -108,7 +108,7 @@ def explain_llm(exc: BaseException, model: str) -> str:
 
 
 QUOTA_FILE = PROJECT_ROOT / ".cache" / "openrouter_quota.json"
-MIN_FREE_REQUESTS = 4   # a planning run needs about 3-6 model calls
+MIN_FREE_REQUESTS = 4   # a planning run needs about 2-5 model calls
 DIM, YELLOW, RESET = "\033[2m", "\033[33m", "\033[0m"
 
 

@@ -270,7 +270,7 @@ def test_chat_asks_for_what_is_missing_then_saves_and_plans():
     request = obsidian.written["Запити/Похід Сокіл з чату.md"]
     assert "Уточнення" in request and "дорослих: 2" in request.lower()
     assert "Плани/Похід Сокіл з чату — план.md" in obsidian.written    # planned and written back
-    assert llm.calls == 3                                          # 1 reading + 1 proposal + conclusion
+    assert llm.calls == 2                                          # 1 reading + 1 proposal; the conclusion is code
 
 
 def test_chat_can_be_cancelled_without_writing_anything():
@@ -589,14 +589,10 @@ def test_a_place_the_model_missed_is_found_in_the_text():
 
 
 def test_conclusion_gets_safety_first_and_no_gear_weight_noise():
-    class Recording(FakeLLM):
-        async def text(self, system: str, user: str) -> str:
-            self.facts = json.loads(user)
-            return await super().text(system, user)
-    llm = Recording({**PARSED, "participant_base_gear_kg": None, "adult_base_gear_kg": None}, [GOOD])
+    llm = FakeLLM({**PARSED, "participant_base_gear_kg": None, "adult_base_gear_kg": None}, [GOOD])
     state, _ = run_agent(llm)
-    warnings = llm.facts["final_plan"]["warnings"]
-    assert not any(w.startswith("Вагу спорядження не вказано") for w in warnings)
+    text = state["conclusion"]
+    assert "Вагу спорядження" not in text and text.index("Погодний ризик") < text.index("Головне")
     from plast_agent.workflow import PROPOSE_SYSTEM
     assert "Do not state what Plast rules allow" in PROPOSE_SYSTEM
 
@@ -650,25 +646,18 @@ def test_status_rule_puts_safety_first():
     assert plan_status(v(), {"overall_risk": "low"}, []) == "ok"
 
 
-def test_a_conclusion_with_invented_numbers_is_replaced_by_the_facts():
-    """Codex P2 (twice): «1 км … +25 °C» and then «+10.4 °C» for a −10.4 °C night went into the plan. Numbers
-    now come from the tools only: a model paragraph with any digit is replaced by the factual one."""
+def test_the_conclusion_is_written_by_code_not_by_the_model():
+    """Codex P2 (three rounds): a model paragraph invented «1 км», then «+10.4 °C», then «ніч тепла, морозу не
+    буде» without a digit. The conclusion now comes from the tool results only; the model is not asked."""
     class Writer(FakeLLM):
-        def __init__(self, paragraph):
-            super().__init__(PARSED, [GOOD])
-            self.paragraph = paragraph
-
         async def text(self, system, user):
-            self.calls += 1
-            return self.paragraph
-    for invented in ("Безпечний маршрут, 1 км, повертайтеся о 10:00, прогноз +25 °C.", "Ніч до +10.4 °C, це тепло."):
-        state, _ = run_agent(Writer(invented))
-        assert state["conclusion"].startswith("Маршрут «") and "+10.4" not in state["conclusion"]
-        assert "−10.4" in state["conclusion"] or "-10.4" in state["conclusion"]     # the real frost, from the tool
-    words = "Другий день найважчий: вийдіть раніше й візьміть зимові спальники."
-    state, _ = run_agent(Writer(words))
-    assert state["conclusion"] == words                                               # words only: kept as written
-
+            raise AssertionError("the model must not write the conclusion")
+    llm = Writer(PARSED, [GOOD])
+    state, _ = run_agent(llm)
+    text = state["conclusion"]
+    assert text.startswith("Маршрут «") and "−10.4" in text or "-10.4" in text   # the real frost, from the tool
+    assert "Головне:" in text                                                     # the warnings are named
+    assert llm.calls == 2                                                          # reading + proposal only
 
 
 def test_unknown_arguments_and_schema_failures_are_structured_errors():

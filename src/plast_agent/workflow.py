@@ -702,64 +702,17 @@ def build_graph(links: McpLinks, llm: LLM):
         return "supplies" if state.get("best") else "conclude"
 
     async def conclude(state: State) -> State:
+        """The conclusion is written by code from the tool results, never by the model: a model paragraph could
+        state «ніч тепла» under a −10 °C forecast or «попереджень немає» next to three of them, and no check
+        of its words can rule that out. The model's job ends with the choice of route, nights and date."""
+        step("8. Висновок для провідника (з результатів інструментів, без моделі)")
         final = state.get("validation") or {}
         if state.get("status") == "group":
-            # the reason is exact and known: say it in code (a small model blamed the draft rules instead)
-            step("8. Висновок для провідника (з фактів, без моделі)")
             text = group_conclusion(final, state.get("weather") or {})
-            print(f"    {text[:300]}")
-            return {"conclusion": text}
-        provider = getattr(getattr(llm, "provider", None), "name", "")
-        if provider == "ollama":   # the small local model retells its instructions: the facts say it better
-            step("8. Висновок для провідника (з фактів; локальна модель пише висновки гірше)")
-            text = fallback_conclusion(state)
-            print(f"    {text[:300]}")
-            return {"conclusion": text}
-        step("8. Висновок для провідника (LLM)")
-        is_plan = state["status"] != "failed" and final.get("valid")
-        facts = {
-            "status": state["status"],
-            "rules_status": final.get("rules_status"),
-            "history": [{"attempt": a["n"], "outcome": a["outcome"]} for a in state["attempts"]],
-            "final_plan": {
-                "route": final.get("route_name"),
-                "start_date": state["proposal"]["start_date"],
-                "days": [{k: d[k] for k in ("day", "km", "ascent_m", "walking_hours", "est_arrival")}
-                         for d in final.get("days", [])],
-                "weather_overall": (state.get("weather") or {}).get("overall_risk"),
-                "weather_triggers": [{"date": d["date"], "code": t["code"], "risk": t["risk"]}
-                                     for d in (state.get("weather") or {}).get("days", []) for t in d["triggers"]],
-                # safety first: the model tends to repeat whatever comes first, e.g. the missing gear weight
-                "warnings": [x["message"] for x in sorted(
-                    (x for x in final.get("violations", []) if x["severity"] == "warning"),
-                    key=lambda x: SAFETY_ORDER.get(x["code"], 9))][:6]
-                            + [w for w in (state.get("supplies") or {}).get("warnings", [])
-                               if not w.startswith("Вагу спорядження не вказано")][:3],
-            } if is_plan else None,
-            "last_errors": [f for a in state["attempts"][-1:] for f in a["feedback"]][:4] if not is_plan else [],
-        }
-        try:
-            text = await llm.text("Ти помічник пластового провідника. Напиши висновок українською, 3-5 речень, "
-                            "лише з наданих фактів. Не пиши жодних цифр: числа (км, дати, температури, години) план показує сам, "
-                            "а ти пиши словами, що головне і що робити. Якщо правила DRAFT — скажи, що їх треба "
-                            "затвердити. Статус attention — план валідний, але назви головні попередження й що з ними "
-                            "робити. Якщо статус risky або failed — чітко скажи, що план не рекомендований без змін і чому. "
-                            "history — це відхилені спроби, не описуй їх як чинний план. Не згадуй чисел, дат, назв чи "
-                            "погодних явищ, яких немає в JSON. Спершу назви найважливіше для безпеки: високий чи "
-                            "середній погодний ризик і холодну ніч, кінець маршруту на висоті без спуску, пізній прихід, "
-                            "ночівлю без води. Не пиши, що дозволяють чи вимагають правила Пласту, понад надане.",
-                            json.dumps(facts, ensure_ascii=False))
-        except Exception as exc:  # the plan note must still be written: a factual summary instead
-            print(f"    {YELLOW}модель не відповіла вчасно ({type(exc).__name__}); пишу висновок із фактів{RESET}")
-            text = fallback_conclusion(state)
         else:
-            if re.search(r"\d", text):   # numbers come from the tools only: the model writes words
-                print(f"    {YELLOW}у висновку моделі є числа; пишу висновок із фактів (числа лише з інструментів){RESET}")
-                text = fallback_conclusion(state)
-        if adult_advice(final) and "дорослого" not in text:   # the escort advice is never dropped
-            text = text.strip() + " " + adult_advice(final)
+            text = fallback_conclusion(state)
         print(f"    {text[:300]}")
-        return {"conclusion": text.strip()}
+        return {"conclusion": text}
 
     g = StateGraph(State)
     for name, fn in [("read_request", read_request), ("parse_request", parse_request),

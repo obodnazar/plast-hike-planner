@@ -293,3 +293,44 @@ def test_corrections_after_a_plan_replace_what_they_say():
     assert d["must_include"] == []
     d, notes, _ = interpret({**base, "max_km_per_day": None}, first.replace("12 км", "0.5 км"), TODAY)
     assert d["max_km_per_day"] is None and any("поза межами" in n for n in notes)   # bounds after refine
+
+
+# ------------------------------------------------------------------ independent review, third round (Codex, 17 Nov)
+def test_a_new_head_count_after_the_plan_is_kept():
+    """Codex P1 (round 3): «Учасників буде 20» with a correct model reading came back as 10."""
+    from plast_agent.workflow import interpret
+    base = dict(section="yunatstvo", participants=10, adults=2, days=3, start_date="2026-11-21")
+    text = "Юнацтво, 10 учасників і 2 дорослі, 3 дні з 21 листопада.\n\nЗміна після плану: "
+    for change, model, want in [("Учасників буде 20", dict(participants=20), (20, 2)),
+                                ("Дорослих буде 1", dict(adults=1), (10, 1)),
+                                ("Зміни кількість дорослих на 1", dict(adults=1), (10, 1)),
+                                ("Додай ще двох юнаків", dict(participants=12), (12, 2))]:
+        d, _, missing = interpret(base | model, text + change, TODAY)
+        assert (d["participants"], d["adults"]) == want and not missing, change
+    d, _, missing = interpret(base | dict(participants=10), text + "Додай ще двох юнаків", TODAY)
+    assert missing == ["participants"]                     # the model ignored the change: ask, do not keep 10
+
+
+def test_dates_keep_the_year_and_iso_and_tomorrow():
+    """Codex P2 (round 3): «5 грудня 2027 року» became 2026; «2026-12-05» was dropped; «завтра» kept a wrong date."""
+    from plast_agent.workflow import interpret
+    base = dict(section="yunatstvo", participants=10, adults=2, days=3)
+    who = "Юнацтво, 10 учасників і 2 дорослі, 3 дні "
+    d, _, _ = interpret(base | dict(start_date="2027-12-05"), who + "з 5 грудня 2027 року.", TODAY)
+    assert d["start_date"] == "2027-12-05"
+    d, _, _ = interpret(base | dict(start_date="2026-12-05"), who + "з 2026-12-05.", TODAY)
+    assert d["start_date"] == "2026-12-05"
+    d, _, _ = interpret(base | dict(start_date="2026-11-21"), who + ", виходимо завтра.", TODAY)
+    assert d["start_date"] == "2026-11-16"                 # TODAY is 15 Nov
+
+
+def test_gear_weights_only_from_the_text():
+    """Codex P2 (round 3): the model's guessed 5 / 7 kg made the pack look weighed and within the limit."""
+    from plast_agent.workflow import interpret
+    base = dict(section="yunatstvo", participants=10, adults=2, days=3, start_date="2026-11-21",
+                participant_base_gear_kg=5, adult_base_gear_kg=7)
+    d, notes, _ = interpret(dict(base), "Юнацтво, 10 учасників і 2 дорослі, 3 дні з 21 листопада.", TODAY)
+    assert d["participant_base_gear_kg"] is None and d["adult_base_gear_kg"] is None
+    d, _, _ = interpret(dict(base), "Юнацтво, 10 учасників і 2 дорослі, 3 дні з 21 листопада. "
+                                    "Рюкзаки без їжі: учасник — 5 кг, виховник — 7 кг.", TODAY)
+    assert (d["participant_base_gear_kg"], d["adult_base_gear_kg"]) == (5, 7)

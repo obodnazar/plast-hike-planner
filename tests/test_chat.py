@@ -190,3 +190,12 @@ def test_a_wish_taken_back_after_the_plan_stays_out():
     again = {**PARSED, "must_include": []}
     conv, _ = talk([DESCRIPTION, {"type": "confirm"}, "Більше не хочу озера"], FakeLLM(PARSED, [GOOD, again]))
     assert conv.request["must_include"] == [] and conv.request["participants"] == 10
+
+
+def test_a_new_head_count_reaches_the_saved_plan_and_supplies():
+    """Codex P1 (round 3): after «Учасників буде 20» the saved plan still had 10 + 2 and supplies for 12."""
+    again = {**PARSED, "participants": 20}
+    conv, _ = talk([DESCRIPTION, {"type": "confirm"}, "Учасників буде 20", {"type": "confirm"}],
+                   FakeLLM(PARSED, [GOOD, again, GOOD]))
+    latest = list_plans()[0]
+    assert latest["request"]["participants"] == 20 and latest["supplies"]["people"] == 22
