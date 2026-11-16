@@ -68,28 +68,50 @@ def leaflet_enabled(settings) -> bool:
 
 
 async def plan_and_write(links: McpLinks, settings, request_path: str | None, dry_run: bool, llm=None,
-                         chat_mode: bool = False, ask=None, local: bool = False) -> int:
-    """Everything after both servers are connected. Catches its own errors and returns an exit code."""
+                         chat_mode: bool = False, ask=None, local: bool = False, *,
+                         prepared: tuple[str, dict, list[str]] | None = None, on_node=None,
+                         report: dict | None = None, trace_from: int = 0) -> int:
+    """Everything after both servers are connected. Catches its own errors and returns an exit code.
+
+    The web chat (plast_web) uses three more arguments; the CLI passes none of them:
+    prepared   the dialogue already happened elsewhere: (vault path of the saved request, request, notes);
+    on_node    async callback(node name, its update) after each step of the graph (progress in the browser);
+    report     filled with {"record": saved plan} or {"error": kind, "message": text} for the caller."""
     started = time.monotonic()
+    report = report if report is not None else {}
     try:
         llm = llm or make_llm(settings, local)
     except LLMError as exc:
         print(f"\n{RED}Модель недоступна:{RESET} {exc}")
+        report.update(error="model", message=str(exc))
         return 1
     graph = build_graph(links, llm)
     try:
         start: dict = {"request_path": request_path}
-        if chat_mode:  # the request comes from a dialogue, is saved to Obsidian, then planned as usual
+        if prepared:   # the web dialogue saved and confirmed the request already
+            request_path, request, notes = prepared
+            start = {"request_path": request_path, "request": request, "search_notes": notes}
+        elif chat_mode:  # the request comes from a dialogue, is saved to Obsidian, then planned as usual
             got = await (chat(links, llm, ask) if ask else chat(links, llm))
             if got is None:
                 return 0
             request_path, request, notes = got
             start = {"request_path": request_path, "request": request, "search_notes": notes}
         planning_started = time.monotonic()   # the dialogue (the leader typing) is not the agent's time
-        state = await graph.ainvoke(start, {"recursion_limit": 80})
+        if on_node is None:
+            state = await graph.ainvoke(start, {"recursion_limit": 80})
+        else:   # the same run, step by step: "updates" for progress, "values" for the final state
+            state = {}
+            async for mode, chunk in graph.astream(start, {"recursion_limit": 80}, stream_mode=["updates", "values"]):
+                if mode == "values":
+                    state = chunk
+                else:
+                    for node, update in chunk.items():
+                        await on_node(node, update or {})
     except Exception as exc:  # every failure is explained here, inside both MCP connections
         links.reported = True
         leaf = next((x for x in _leaves(exc) if not isinstance(x, BaseExceptionGroup)), exc)
+        report.update(error=type(leaf).__name__, message=str(leaf))
         if isinstance(leaf, AgentStop):
             print(f"\n{RED}Зупинка:{RESET} {leaf}")
         elif isinstance(leaf, LLMError):
@@ -117,9 +139,10 @@ async def plan_and_write(links: McpLinks, settings, request_path: str | None, dr
                         "leaflet_id": "plast-" + hashlib.sha1(request_path.encode()).hexdigest()[:10]},
                        request_path, llm.model_name, now_kyiv())
     record = plan_record(state, request_path, llm.model_name, now_kyiv(),
-                         model_switches=getattr(llm, "switches", []), trace=getattr(links, "trace", []),
+                         model_switches=getattr(llm, "switches", []), trace=getattr(links, "trace", [])[trace_from:],
                          obsidian_plan="" if dry_run else plan_path)
     saved = save_plan(record)   # for the web page; saved before Obsidian, so a failed write loses nothing
+    report["record"] = record
     print(f"\n{BOLD}━━ 9. Записую план в Obsidian: {plan_path}{RESET}")
     if dry_run:
         print("  (dry run: нічого не записано)")
@@ -145,7 +168,9 @@ async def plan_and_write(links: McpLinks, settings, request_path: str | None, dr
             backup.parent.mkdir(exist_ok=True)
             backup.write_text(note, encoding="utf-8")
             print(f"  {RED}✗ Obsidian недоступний при записі ({exc}).{RESET}\n  План збережено локально: {backup}")
-            save_plan({**record, "obsidian_plan": ""})
+            record = {**record, "obsidian_plan": ""}
+            save_plan(record)
+            report.update(record=record, error="obsidian_write", message=str(exc))
             return 1
 
     colour = {"ok": GREEN, "attention": YELLOW, "risky": YELLOW, "group": YELLOW}.get(state.get("status"), RED)

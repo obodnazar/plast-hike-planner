@@ -44,8 +44,8 @@ document.getElementById("theme").addEventListener("click", () => {
   if (current.redraw) current.redraw();
 });
 
-/* ---------- router: / and /plan/<id> ---------- */
-const current = { redraw: null, map: null };
+/* ---------- router: / (chat), /plans, /plan/<id> ---------- */
+const current = { redraw: null, map: null, leave: null };
 async function getJSON(url) {
   const r = await fetch(url, { headers: { accept: "application/json" } });
   const body = await r.json().catch(() => ({}));
@@ -54,16 +54,20 @@ async function getJSON(url) {
 }
 async function route() {
   if (current.map) { current.map.remove(); current.map = null; }
+  if (current.leave) { current.leave(); current.leave = null; }
   current.redraw = null;
   const m = location.pathname.match(/^\/plan\/([0-9a-f-]+)$/);
+  document.querySelectorAll(".tabs a").forEach(a => a.classList.toggle("on",
+    a.getAttribute("href") === (location.pathname === "/" ? "/" : "/plans")));
   app.replaceChildren(h("p", { class: "loading", text: "Завантажую…" }));
   try {
     if (m) renderPlan(await getJSON(`/api/plans/${m[1]}`));
-    else renderList(await getJSON("/api/plans"));
+    else if (location.pathname === "/plans") renderList(await getJSON("/api/plans"));
+    else renderChat();
   } catch (err) {
     app.replaceChildren(h("div", { class: "card error" },
       h("h1", { text: "Цього плану не знайдено" }), h("p", { text: err.message }),
-      h("a", { class: "btn primary", href: "/", "data-nav": true, text: "← Усі плани" })));
+      h("a", { class: "btn primary", href: "/plans", "data-nav": true, text: "← Усі плани" })));
     document.title = "Стежка";
   }
   app.focus({ preventScroll: true });
@@ -87,8 +91,8 @@ function renderList(data) {
   if (!data.plans.length) {
     page.append(h("div", { class: "card empty" },
       h("h2", { text: "Ще немає жодного плану" }),
-      h("p", {}, "Запустіть агента в терміналі, наприклад ", h("code", { text: "uv run plast-agent --chat" }),
-        ", і план з'явиться тут після оновлення сторінки.")));
+      h("p", {}, "Опишіть мандрівку в ", h("a", { href: "/", "data-nav": true, text: "чаті" }),
+        " або запустіть агента в терміналі (", h("code", { text: "uv run plast-agent --chat" }), "): план з'явиться тут.")));
   } else {
     page.append(h("div", { class: "plans" }, data.plans.map(p => h("a", { class: "card plan-row", href: `/plan/${p.id}`, "data-nav": true },
       h("div", {}, h("span", { class: `badge ${p.status.kind}`, text: p.status.label }), h("h3", { text: p.title }),
@@ -103,7 +107,7 @@ function renderPlan(v) {
   document.title = `${v.title} — Стежка`;
   const L = v.links;
   const page = h("article", { class: "plan" });
-  page.append(h("nav", { class: "crumbs" }, h("a", { href: "/", "data-nav": true, text: "← Усі плани" })));
+  page.append(h("nav", { class: "crumbs" }, h("a", { href: "/plans", "data-nav": true, text: "← Усі плани" })));
 
   page.append(h("header", { class: "head" },
     h("div", {}, h("span", { class: `badge ${v.status.kind}`, text: v.status.label }), h("h1", { text: v.title }),
@@ -365,6 +369,185 @@ function drawProfile(box, v, map) {
   let timer;
   current.redraw = draw;
   window.addEventListener("resize", () => { clearTimeout(timer); timer = setTimeout(() => current.redraw === draw && draw(), 150); });
+}
+
+/* ---------- the chat: events from the server, rendered as they come; the conversation lives on the server ---------- */
+const AVATAR = () => h("span", { class: "avatar", "aria-hidden": "true" }, (() => {
+  const svg = s("svg", { width: 16, height: 16, viewBox: "0 0 24 24" }); svg.append(s("path", { d: "M2 20 9 8l4 6 3-4 6 10H2Z", fill: "#fff" })); return svg;
+})());
+const fmtClock = ms => { const sec = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`; };
+
+function renderChat() {
+  document.title = "Стежка — чат";
+  const list = h("div", { class: "msgs", role: "log", "aria-live": "polite", "aria-relevant": "additions" });
+  const banner = h("div", { class: "banner", hidden: true });
+  const quick = h("div", { class: "quick" });
+  const input = h("textarea", { rows: 1, "aria-label": "Повідомлення", placeholder: "Опишіть мандрівку: хто, коли, куди, що хочете побачити…" });
+  const send = h("button", { class: "send", type: "button", "aria-label": "Надіслати" }, (() => {
+    const svg = s("svg", { width: 18, height: 18, viewBox: "0 0 24 24", fill: "none" });
+    svg.append(s("path", { d: "M4 12h14M13 6l6 6-6 6", stroke: "currentColor", "stroke-width": "2.4", "stroke-linecap": "round", "stroke-linejoin": "round" }));
+    return svg;
+  })());
+  const fresh = h("button", { class: "btn small", type: "button", text: "＋ Новий план" });
+  app.replaceChildren(h("div", { class: "chat" },
+    h("div", { class: "chat-head" }, h("h1", { text: "Куди йдемо?" }), h("span", { class: "spacer" }), fresh),
+    banner, list),
+    h("div", { class: "composer" }, quick, h("div", { class: "box" }, input, send)));
+
+  const S = { ws: null, id: store.get("chat-id", null), seq: 0, state: "describe", nodes: new Map(), timers: new Set(), closed: false, retry: 0 };
+  const scroll = () => window.scrollTo({ top: document.body.scrollHeight, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  const post = msg => { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify(msg)); };
+  const setQuick = items => quick.replaceChildren(...items.map(t => h("button", { class: "chip", type: "button", text: t, onclick: () => say(t) })));
+  function say(text) {
+    text = text.trim();
+    if (!text || S.state === "busy") return;
+    post({ type: "say", text }); input.value = ""; autosize(); setQuick([]);
+  }
+  function autosize() { input.style.height = "auto"; input.style.height = `${Math.min(180, input.scrollHeight)}px`; }
+  input.addEventListener("input", autosize);
+  input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); say(input.value); } });
+  send.addEventListener("click", () => say(input.value));
+  fresh.addEventListener("click", () => { store.set("chat-id", null); S.id = null; list.replaceChildren(); S.nodes.clear(); S.seq = 0; reconnect(); });
+
+  function place(id, node) {   // a card or a progress block is updated in place, everything else is appended
+    const old = id && S.nodes.get(id);
+    if (old) old.replaceWith(node); else list.append(node);
+    if (id) S.nodes.set(id, node);
+  }
+  function agentRow(...kids) { return h("div", { class: "msg ai" }, AVATAR(), h("div", { class: "col" }, ...kids)); }
+
+  function onEvent(e) {
+    if (e.seq) { if (e.seq <= S.seq) return; S.seq = e.seq; }
+    const fresh = Date.now() - (e.at || 0) < 3000;   // live, not a replay of the history
+    if (e.type === "msg") {
+      if (e.role === "user") list.append(h("div", { class: `msg me ${fresh ? "new" : ""}` }, h("div", { class: "bubble", text: e.text })));
+      else { const row = agentRow(h("div", { class: "bubble", text: e.text })); if (fresh) { row.classList.add("new"); say_(e.text); } list.append(row); }
+      setQuick(e.role === "agent" ? e.quick || [] : []);
+    } else if (e.type === "thinking") {
+      const old = S.nodes.get("thinking");
+      if (old) { clearInterval(old._timer); old.remove(); S.nodes.delete("thinking"); }
+      if (e.on) {
+        const clock = h("small", { class: "num", text: "0:00" });
+        const started = Date.now();
+        const timer = setInterval(() => { clock.textContent = fmtClock(Date.now() - started); }, 1000);
+        S.timers.add(timer);
+        const node = agentRow(h("div", { class: "bubble typing" }, h("span", { class: "dots", "aria-hidden": "true" }, h("i"), h("i"), h("i")), ` ${e.label} `, clock));
+        S.nodes.set("thinking", node); list.append(node);
+        node._timer = timer;
+      }
+    } else if (e.type === "card") place(e.id, agentRow(understoodCard(e)));
+    else if (e.type === "progress") place(e.id, agentRow(progressCard(e)));
+    else if (e.type === "plan") list.append(agentRow(planCard(e)));
+    else if (e.type === "state") {
+      S.state = e.state;
+      input.placeholder = e.placeholder || "";
+      input.disabled = send.disabled = e.state === "busy";
+      if (e.state !== "busy") input.focus({ preventScroll: true });
+    }
+    scroll();
+  }
+  function say_(text) { live.textContent = ""; setTimeout(() => { live.textContent = text; }, 30); }
+
+  function understoodCard(e) {
+    const facts = h("div", { class: "facts" }, e.fields.map(f => {
+      const fact = h("div", { class: `fact ${f.edit && e.active ? "editable" : ""}` }, h("b", { text: f.label }), h("span", { text: f.value }));
+      if (f.edit && e.active) {
+        fact.setAttribute("role", "button"); fact.setAttribute("tabindex", "0");
+        fact.setAttribute("aria-label", `${f.label}: ${f.value}. Змінити`);
+        const open = () => fact.replaceChildren(h("b", { text: f.label }), editor(f));
+        fact.addEventListener("click", ev => { if (!fact.querySelector("form")) { ev.stopPropagation(); open(); } });
+        fact.addEventListener("keydown", ev => { if ((ev.key === "Enter" || ev.key === " ") && !fact.querySelector("form")) { ev.preventDefault(); open(); } });
+      }
+      return fact;
+    }));
+    const card = h("div", { class: `card understood ${e.active ? "" : "closed"}` }, h("h4", { text: "Ось що я зрозумів" }), facts,
+      e.notes.length ? h("div", { class: "card-notes" }, e.notes.map(n => callout("info", "ℹ️", n))) : null);
+    if (e.active) card.append(h("div", { class: "actions" },
+      h("button", { class: "btn primary", type: "button", text: "✓ Все правильно — планувати", onclick: () => post({ type: "confirm" }) }),
+      h("button", { class: "btn", type: "button", text: "Скасувати", onclick: () => post({ type: "cancel" }) })),
+      h("p", { class: "note", text: "Натисніть на поле, щоб змінити його, або напишіть виправлення словами." }));
+    return card;
+  }
+  function editor(f) {
+    const ed = f.edit;
+    let control;
+    if (ed.kind === "select") control = h("select", { "aria-label": f.label }, ed.options.map(o => h("option", { value: o.value, selected: o.value === ed.value, text: o.label })));
+    else if (ed.kind === "date") control = h("input", { type: "date", value: ed.value || "", "aria-label": f.label });
+    else control = h("input", { type: "number", min: ed.min, max: ed.max, value: ed.value ?? "", "aria-label": f.label, inputmode: "numeric" });
+    const form = h("form", { class: "edit" }, control, h("button", { class: "btn primary small", type: "submit", text: "OK" }));
+    form.addEventListener("submit", ev => {
+      ev.preventDefault();
+      post({ type: "set_field", key: f.key, value: ed.kind === "number" ? Number(control.value) : control.value });
+    });
+    setTimeout(() => { control.focus(); try { control.select(); } catch { /* not every input can */ } }, 0);
+    return form;
+  }
+  function progressCard(e) {
+    const clock = h("small", { class: "num clock" });
+    const tick = () => { clock.textContent = fmtClock((e.finished ? e.at : Date.now()) - e.started); };
+    tick();
+    if (!e.finished) { const t = setInterval(() => { if (!clock.isConnected) clearInterval(t); else tick(); }, 1000); }
+    const icon = { done: "✓", now: "", todo: "", failed: "✕" };
+    return h("div", { class: "card progress" },
+      h("div", { class: "progress-head" }, h("h4", { text: e.finished ? "Готово" : "Працюю над планом" }), clock),
+      e.steps.map(st => h("div", { class: `step ${st.state}` }, h("span", { class: "ic", "aria-hidden": "true", text: icon[st.state] }),
+        h("span", { text: st.label }), st.note ? h("small", { text: st.note }) : null,
+        h("span", { class: "sr-only", text: { done: " — зроблено", now: " — триває", todo: " — далі", failed: " — не вдалося" }[st.state] }))));
+  }
+  function planCard(e) {
+    const spark = s("svg", { class: "spark", viewBox: "0 0 600 86", preserveAspectRatio: "none", "aria-hidden": "true" });
+    if (e.spark.length > 1) {
+      const k0 = e.spark[0][0], k1 = e.spark[e.spark.length - 1][0];
+      const e0 = Math.min(...e.spark.map(p => p[1])), e1 = Math.max(...e.spark.map(p => p[1]));
+      const X = k => (k - k0) / Math.max(0.01, k1 - k0) * 600, Y = v => 80 - (v - e0) / Math.max(1, e1 - e0) * 66;
+      const colors = [css("--d0"), css("--d1"), css("--d2")];
+      [0, 1, 2].forEach(c => {
+        const pts = e.spark.filter(p => p[2] === c);
+        if (pts.length > 1) spark.append(s("polyline", { points: pts.map(p => `${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join(" "), fill: "none", stroke: colors[c], "stroke-width": 3, "stroke-linejoin": "round" }));
+      });
+    }
+    const L = e.links;
+    return h("article", { class: "card plancard" }, spark, h("div", { class: "body" },
+      h("span", { class: `badge ${e.status.kind}`, text: e.status.label }), h("h3", { text: e.title }), h("div", { class: "sub", text: e.meta }),
+      h("div", { class: "stats" }, e.stats.map(x => h("div", { class: "stat" }, h("b", { class: "num", text: x.value }), h("span", { text: x.label })))),
+      e.top ? callout(e.top.level === "danger" ? "danger" : "warn", e.top.level === "danger" ? "⛔" : "⚠️", e.top.text, e.top.advice) : null,
+      h("div", { class: "actions" },
+        h("a", { class: "btn primary", href: L.page_url, "data-nav": true, text: "Відкрити план →" }),
+        L.gpx_url && h("a", { class: "btn", href: L.gpx_url, download: true, text: "⬇ GPX" }),
+        L.obsidian_url && h("a", { class: "btn", href: L.obsidian_url, text: "Відкрити в Obsidian" }))));
+  }
+
+  function showStatus(st) {
+    const pill = document.getElementById("status");
+    pill.hidden = false;
+    const ok = st.ready;
+    pill.className = `pill ${ok ? "ok" : "warn"}`;
+    pill.textContent = ok ? "Агент готовий" : "Агент не готовий";
+    const problems = st.problem ? [st.problem] : st.items.filter(i => i.state !== "ok").map(i => `${i.name}: ${i.label}. ${i.todo}`);
+    banner.hidden = ok;
+    banner.replaceChildren(...problems.map(p => callout("warn", "⚠️", p)));
+  }
+  const poll = setInterval(() => getJSON("/api/status").then(showStatus).catch(() => {}), 5000);
+  getJSON("/api/status").then(showStatus).catch(() => {});
+
+  function reconnect() {
+    if (S.closed) return;
+    if (S.ws) { S.ws.onclose = null; S.ws.close(); }
+    const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+    S.ws = ws;
+    ws.onopen = () => { S.retry = 0; ws.send(JSON.stringify({ type: "hello", conversation_id: S.id, last_seq: S.seq })); };
+    ws.onmessage = m => {
+      let e; try { e = JSON.parse(m.data); } catch { return; }
+      if (e.type === "hello") {
+        if (e.conversation_id !== S.id) { list.replaceChildren(); S.nodes.clear(); S.seq = 0; }
+        S.id = e.conversation_id; store.set("chat-id", S.id); showStatus(e.status);
+      } else onEvent(e);
+    };
+    ws.onclose = () => { if (!S.closed) setTimeout(() => reconnect(), Math.min(10000, 500 * 2 ** S.retry++)); };
+  }
+  reconnect();
+  current.leave = () => { S.closed = true; clearInterval(poll); S.timers.forEach(clearInterval); if (S.ws) S.ws.close();
+    document.getElementById("status").hidden = true; };
 }
 
 route();

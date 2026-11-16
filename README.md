@@ -136,12 +136,22 @@ uv run plast-agent --chat --local
 Model calls have hard deadlines (120 s for parsing and proposals, 45 s for the closing paragraph). OpenRouter keeps slow free-model connections alive, so an HTTP read timeout alone may never fire. If the closing paragraph times out, the agent writes a factual summary instead.
 The server can also be inspected with any MCP client, e.g. `npx @modelcontextprotocol/inspector` → Streamable HTTP → `http://127.0.0.1:8770/mcp`.
 
-## Plan pages in the browser (optional)
-After every run the agent also saves the plan as `out/plans/<id>.json` (not in git) and prints its address.
+## Chat and plan pages in the browser (optional)
 ```bash
 uv run plast-web                  # http://127.0.0.1:8780, opens the browser
 ```
-The page shows the plan from that file: a topographic map with the days in colour, an elevation profile linked to
+**Chat (`/`).** The same agent as `plast-agent --chat`, in the browser: the leader describes the hike, the agent
+asks what is missing (with quick replies), shows «Ось що я зрозумів» where any field can be changed by a click
+(read by code, no model call), then plans with progress step by step and answers with a plan card. The request is
+saved to Obsidian `Запити/`, the plan to `Плани/`, exactly as in the CLI; the MCP calls are printed in the terminal
+where plast-web runs. It needs Obsidian open and a model (OpenRouter key or the local Ollama model). plast-web
+starts the plast-trail server itself if nothing listens on its port and stops it on exit; a server already running
+in a terminal is used and left alone. One supervisor task per MCP server keeps the connection and reconnects (the
+header shows «Агент готовий» or what to do). A conversation lives on the server: a reloaded tab catches up, and
+closing the tab does not stop a plan. One plan is made at a time (the free model quota is shared).
+
+**Plan pages (`/plans`, `/plan/<id>`).** After every run (CLI or chat) the agent saves the plan as
+`out/plans/<id>.json` (not in git). The page shows the plan from that file: a topographic map with the days in colour, an elevation profile linked to
 the map (hover, or focus it and use the arrow keys), each day against daylight, weather, safety, supplies and
 document checklists, other routes, and «Як агент дійшов до цього плану» with the MCP calls behind a switch. It needs
 no model, no Obsidian and no MCP server; the map tiles and Leaflet need internet (without it the route picture is
@@ -163,8 +173,8 @@ Details and rate limits: [docs/data-and-replay.md](docs/data-and-replay.md).
 
 ## Checks
 ```bash
-uv run pytest -q                          # 143 tests: domain logic, schemas over in-memory MCP, the agent, request understanding, the evaluation, portability, the plan pages (no network)
-uv run plast-web                          # saved plans in the browser (see above)
+uv run pytest -q                          # 152 tests: domain logic, schemas over in-memory MCP, the agent, request understanding, the evaluation, portability, the plan pages, the web chat (no network)
+uv run plast-web                          # chat and saved plans in the browser (see above)
 uv run python scripts/smoke_server.py     # all 6 tools over real MCP, incl. error cases and an empty result
 uv run check-obsidian                     # Obsidian discovery + one vault_read
 uv run python scripts/reset_demo.py       # clean the demo vault before a rehearsal (plans, pictures, tracks)
@@ -188,7 +198,7 @@ Never committed (all in `.gitignore`): `.env`, `certs/`, `demo-vault/.obsidian/`
 ```
 src/plast_trail/   custom MCP server: server.py (tools), routes.py, validation.py, weather.py, supplies.py, models.py, data.py, errors.py
 src/plast_agent/   agent: cli.py, workflow.py (LangGraph), llm.py, mcp_links.py (MCP client), render.py, picture.py (route SVG), config.py, chat.py, evaluation.py, check_obsidian.py, plan_store.py (saved plans)
-src/plast_web/     plan pages: app.py (local web server), view.py (the boundary to human text), static/ (page, styles, script)
+src/plast_web/     chat and plan pages: app.py (local web server), conversation.py (the chat), runtime.py (MCP supervisors, plast-trail process), view.py (the boundary to human text), static/ (page, styles, script)
 data/              routes.json (121 routes) · places.json (1494 named places) · rules.yaml (DRAFT norms with sources)
 fixtures/          recorded Open-Meteo responses (replay)
 scripts/           build_dataset, build_places, record_weather, smoke_server, smoke_model, gen_docs, reset_demo, eval_parsing, offline_check

@@ -1,16 +1,21 @@
-"""plast-web: the plans the agent saved, as pages in the browser.
+"""plast-web: chat with the agent and the plans it made, in the browser.
 
     uv run plast-web                 # http://127.0.0.1:8780, opens the browser
     uv run plast-web --port 8790 --no-browser
 
-Reads out/plans/*.json written by `plast-agent` after each run; needs no model, no Obsidian and no MCP
-server. Listens on 127.0.0.1 only. Every answer for the page goes through view.present(), so the page shows
-human text, not the agent's ids and codes.
+The chat (/) runs the same agent as `plast-agent --chat`: both MCP servers, the same LangGraph workflow; the
+agent's own lines (the MCP calls) are printed in this terminal. It needs Obsidian open and a model; plast-web
+starts the plast-trail server itself if it is not running. Saved plans (/plans, /plan/<id>) need none of that.
+Listens on 127.0.0.1 only. Every answer for the page goes through view.present() or is written in Ukrainian by
+conversation.py, so the page shows human text, not the agent's ids and codes.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
+import sys
+import contextlib
 import os
 import threading
 import webbrowser
@@ -23,10 +28,13 @@ from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, R
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.routing import WebSocketRoute
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from plast_agent.config import utf8_output
 from plast_agent.picture import route_gpx, route_svg
 from plast_agent.plan_store import list_plans, load_plan, plans_dir
+from plast_web.conversation import Conversation
 from plast_web.view import present, summary
 
 STATIC = Path(__file__).parent / "static"
@@ -34,7 +42,7 @@ DEFAULT_PORT = 8780
 # Scripts only from here and the pinned Leaflet on cdnjs; map tiles only from OpenTopoMap; nothing inline.
 CSP = ("default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com; "
        "style-src 'self' https://cdnjs.cloudflare.com; img-src 'self' data: https://*.tile.opentopomap.org; "
-       "connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; "
+       "connect-src 'self' ws://127.0.0.1:* ws://localhost:*; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; "
        "frame-ancestors 'none'")
 
 
@@ -46,14 +54,20 @@ class LocalOnly:
         self.app, self.allowed = app, allowed_hosts
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
+        if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
         headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in scope["headers"]}
         host = headers.get("host", "").lower()
         origin = headers.get("origin")
         if host not in self.allowed or (origin and origin.split("://", 1)[-1].lower() not in self.allowed):
-            await PlainTextResponse("Доступ лише з цього комп'ютера.", status_code=403)(scope, receive, send)
+            if scope["type"] == "websocket":   # a page from elsewhere must not drive the agent or write to Obsidian
+                await send({"type": "websocket.close", "code": 1008})
+            else:
+                await PlainTextResponse("Доступ лише з цього комп'ютера.", status_code=403)(scope, receive, send)
+            return
+        if scope["type"] == "websocket":
+            await self.app(scope, receive, send)
             return
 
         async def with_headers(message):
@@ -114,15 +128,103 @@ async def api_svg(request: Request) -> Response:
     return Response(svg, media_type="image/svg+xml")
 
 
-def create_app(port: int = DEFAULT_PORT, extra_hosts: set[str] | None = None) -> Starlette:
+NO_CHAT = {"ready": False, "problem": "Чат вимкнено в цьому запуску: доступні лише збережені плани.", "items": []}
+MAX_CONVERSATIONS = 30
+
+
+async def api_status(request: Request) -> Response:
+    runtime = request.app.state.runtime
+    return JSONResponse(runtime.status() if runtime else NO_CHAT)
+
+
+def conversation_for(app, conversation_id: str | None) -> tuple[Conversation, bool]:
+    convs: dict[str, Conversation] = app.state.conversations
+    if conversation_id in convs:
+        return convs[conversation_id], False
+    conv = app.state.new_conversation()
+    convs[conv.id] = conv
+    while len(convs) > MAX_CONVERSATIONS:   # forget the oldest idle one
+        old = next((k for k, c in convs.items() if not (c.task and not c.task.done())), None)
+        if old is None:
+            break
+        convs.pop(old)
+    return conv, True
+
+
+async def ws_chat(ws: WebSocket) -> None:
+    """One browser tab. hello{conversation_id, last_seq} -> the events it missed, then live events; the
+    tab's messages go to the conversation. Closing the tab does not stop the conversation."""
+    await ws.accept()
+    queue: asyncio.Queue = asyncio.Queue()
+    conv = None
+    try:
+        hello = await ws.receive_json()
+        conv, new = conversation_for(ws.app, hello.get("conversation_id"))
+        last = 0 if new else int(hello.get("last_seq") or 0)
+        conv.listeners.add(queue)   # first listen, then send the backlog: nothing falls in between
+        runtime = ws.app.state.runtime
+        await ws.send_json({"type": "hello", "conversation_id": conv.id,
+                            "status": runtime.status() if runtime else NO_CHAT})
+        sent = last
+        for event in conv.since(last):
+            await ws.send_json(event)
+            sent = event["seq"]
+        if new:
+            conv.say("Привіт! Опишіть мандрівку своїми словами: хто йде, коли, куди, що хочете побачити. "
+                     "Я підберу маршрут, перевірю безпеку й погоду та порахую запаси.")
+            conv.set_state("describe")
+
+        async def pump():
+            while True:
+                event = await queue.get()
+                if event["seq"] > sent:
+                    await ws.send_json(event)
+
+        sender = asyncio.create_task(pump())
+        try:
+            while True:
+                msg = await ws.receive_json()
+                if isinstance(msg, dict):
+                    if not (runtime and runtime.links) and msg.get("type") != "status":
+                        conv.say(NO_CHAT["problem"] if not runtime else runtime.status()["problem"])
+                        continue
+                    conv.handle(msg)
+        finally:
+            sender.cancel()
+    except (WebSocketDisconnect, RuntimeError, ValueError):
+        pass
+    finally:
+        if conv:
+            conv.listeners.discard(queue)
+
+
+def create_app(port: int = DEFAULT_PORT, extra_hosts: set[str] | None = None, runtime=None,
+               new_conversation=None) -> Starlette:
+    """runtime: plast_web.runtime.Runtime for the chat (main() passes one); without it only saved plans."""
     routes = [
-        Route("/", page), Route("/plan/{plan_id}", page),
+        Route("/", page), Route("/plans", page), Route("/plan/{plan_id}", page),
+        Route("/api/status", api_status), WebSocketRoute("/ws", ws_chat),
         Route("/api/plans", api_plans), Route("/api/plans/{plan_id}", api_plan),
         Route("/api/plans/{plan_id}/route.gpx", api_gpx), Route("/api/plans/{plan_id}/route.svg", api_svg),
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]
     allowed = hosts_for(port) | (extra_hosts or set())
-    return Starlette(routes=routes, middleware=[Middleware(LocalOnly, allowed_hosts=allowed)])
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app):
+        if runtime:
+            await runtime.start()
+        try:
+            yield
+        finally:
+            if runtime:
+                await runtime.stop()
+
+    app = Starlette(routes=routes, middleware=[Middleware(LocalOnly, allowed_hosts=allowed)], lifespan=lifespan)
+    app.state.runtime = runtime
+    app.state.conversations = {}
+    app.state.new_conversation = new_conversation or (lambda: Conversation(runtime))
+    return app
 
 
 def main() -> None:
@@ -133,6 +235,7 @@ def main() -> None:
     ap.add_argument("--no-browser", action="store_true", help="do not open the browser")
     args = ap.parse_args()
     utf8_output()
+    sys.stdout.reconfigure(line_buffering=True)   # the agent's MCP calls show up at once, even when piped
     url = f"http://127.0.0.1:{args.port}/"
     count = len(list_plans())
     print(f"Стежка: {url}  (планів збережено: {count}; папка {plans_dir()})")
@@ -141,7 +244,8 @@ def main() -> None:
     print("Зупинити: Ctrl+C")
     if not args.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    uvicorn.run(create_app(args.port), host="127.0.0.1", port=args.port, log_level="warning")
+    from plast_web.runtime import Runtime
+    uvicorn.run(create_app(args.port, runtime=Runtime()), host="127.0.0.1", port=args.port, log_level="warning")
 
 
 if __name__ == "__main__":
