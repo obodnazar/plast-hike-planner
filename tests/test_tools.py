@@ -339,3 +339,21 @@ def test_common_rule_severity_comes_from_the_rules_file(monkeypatch):
     v = validation.validate_hike_plan("r8613349", "yunatstvo", 10, 2, ["w30", "w56"], date(2026, 11, 23), None, None)
     late = [x for x in v.violations if x.code == "ARRIVAL_AFTER_SAFE_TIME"]
     assert late and all(x.severity == "error" for x in late) and not v.valid
+
+
+def test_gusts_count_as_wind(monkeypatch):
+    """The leader's decision (16.11.2026): 40 m/s gusts with 5 m/s steady wind are not «low»."""
+    from datetime import date
+    from plast_trail import weather
+    real = weather.day_values
+
+    def gusty(fc, d):
+        v = dict(real(fc, d))
+        v.update(weather_code=1, precipitation_sum=0.0, wind_speed_10m_max=5.0, wind_gusts_10m_max=40.0,
+                 temperature_2m_min=5.0)
+        return v
+    monkeypatch.setattr(weather, "day_values", gusty)
+    r = weather.assess_weather_risk("r8613349", date(2026, 11, 23), ["w30", "w56"])
+    wind = [t for d in r.days for t in d.triggers if t.code == "WIND"]
+    assert wind and wind[0].value == 40.0 and "Пориви до 40" in wind[0].recommendation
+    assert getattr(r.overall_risk, "value", r.overall_risk) == "high"   # the route goes above the tree line

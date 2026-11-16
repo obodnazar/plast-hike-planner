@@ -119,7 +119,7 @@ Feedback actually changes behaviour. In the recorded demo run (14 Nov 2026), att
 - Sunset uses the NOAA approximation (a few minutes off).
 
 **Weather**
-- Daily values at a single point. The 12-hour official thresholds are applied to daily sums. Gusts are reported but not scored.
+- Daily values at a single point. The 12-hour official thresholds are applied to daily sums. The wind thresholds (15 / 25 m/s) apply to the stronger of steady wind and gusts (the leader's decision, 16 Nov 2026): in the recorded forecasts steady wind never reached 15 m/s, gusts did on 24 % of route-days, so this makes the agent markedly more cautious on the ridges.
 - An incomplete forecast for a planned day is reported as `WEATHER_UNAVAILABLE`, never filled with zeros.
 - No avalanche, visibility or lightning-timing logic.
 - A forecast is not certainty.

@@ -77,8 +77,8 @@ pace:
 weather:
   treeline_m: {value: 1400, approved: true, source: "PROPOSAL: approximate upper forest limit in the Ukrainian Carpathians (≈1300–1500 m); above it a day counts as exposed"}
   thunderstorm_codes: {value: [95, 96, 99], approved: true, source: "WMO weather codes used by Open-Meteo: 95 thunderstorm, 96/99 with hail"}
-  wind_medium_ms: {value: 15, approved: true, source: "PROPOSAL: [S26] hazard level I starts at 15 m/s; go below the forest line"}
-  wind_high_ms: {value: 25, approved: true, source: "PROPOSAL: [S26] hazard level II starts at 25 m/s; do not go above the forest line"}
+  wind_medium_ms: {value: 15, approved: true, source: "PROPOSAL: [S26] hazard level I starts at 15 m/s; go below the forest line. Applied to the stronger of steady wind and gusts (leader's decision 16.11.2026)"}
+  wind_high_ms: {value: 25, approved: true, source: "PROPOSAL: [S26] hazard level II starts at 25 m/s; do not go above the forest line. Applied to the stronger of steady wind and gusts (leader's decision 16.11.2026)"}
   rain_medium_mm: {value: 15, approved: true, source: "PROPOSAL: [S26] level I (per 12 h, applied to the daily sum); no fords, no camp near streams"}
   rain_high_mm: {value: 50, approved: true, source: "PROPOSAL: [S26] level II (per 12 h, applied to the daily sum); postpone the day"}
   night_cold_c: {value: 0, approved: true, source: "PROPOSAL: research §4; at or below 0 °C winter sleeping gear is required [S18]"}

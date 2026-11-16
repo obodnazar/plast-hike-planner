@@ -183,7 +183,7 @@ def validate_hike_plan(
     title="Assess weather risk for a plan",
     description=(
         "Weather risk for each day of a plan (same route_id and overnight_waypoint_ids as validate_hike_plan) "
-        "starting on start_date: thunderstorm, snow, wind and rain at the route's highest point, and night cold "
+        "starting on start_date: thunderstorm, snow, wind (steady or gusts, whichever is stronger) and rain at the route's highest point, and night cold "
         "at each night spot. Returns per-day risk low/medium/high with triggers and recommendations. "
         "If any day is high, change dates or route and validate again. "
         "Call it only after validate_hike_plan returned valid=true, with the same start_date. "

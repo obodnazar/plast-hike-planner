@@ -231,14 +231,20 @@ def assess_weather_risk(route_id: str, start_date: date, overnight_waypoint_ids:
                                                     "вище межі лісу — не виходити без зимової підготовки."),
                                     source=src["snow_codes"]))
         wind = f["wind_speed_10m_max"]
-        if wind >= w["wind_high_ms"]:
-            triggers.append(Trigger(code="WIND", unit="m/s", value=wind, threshold=w["wind_high_ms"],
+        gusts = f.get("wind_gusts_10m_max") or 0.0
+        # The leader's decision (16.11.2026): the wind thresholds apply to gusts too, so 40 m/s gusts with
+        # 5 m/s steady wind are not «low». The trigger's value is the stronger of the two.
+        strongest = max(wind, gusts)
+        said = f"Пориви до {gusts:g} м/с. " if gusts > wind and gusts >= w["wind_medium_ms"] else ""
+        if strongest >= w["wind_high_ms"]:
+            triggers.append(Trigger(code="WIND", unit="m/s", value=strongest, threshold=w["wind_high_ms"],
                                     risk=RiskLevel.high if exposed else RiskLevel.medium,
-                                    recommendation="Не виходити вище межі лісу; перенести високогірний день.",
+                                    recommendation=said + "Не виходити вище межі лісу; перенести високогірний день.",
                                     source=src["wind_high_ms"]))
-        elif wind >= w["wind_medium_ms"] and exposed:
-            triggers.append(Trigger(code="WIND", unit="m/s", value=wind, threshold=w["wind_medium_ms"], risk=RiskLevel.medium,
-                                    recommendation="Пройти ділянку нижче межі лісу або скоротити день на хребті.",
+        elif strongest >= w["wind_medium_ms"] and exposed:
+            triggers.append(Trigger(code="WIND", unit="m/s", value=strongest, threshold=w["wind_medium_ms"],
+                                    risk=RiskLevel.medium,
+                                    recommendation=said + "Пройти ділянку нижче межі лісу або скоротити день на хребті.",
                                     source=src["wind_medium_ms"]))
         rain = f["precipitation_sum"]
         if rain >= w["rain_high_mm"]:
