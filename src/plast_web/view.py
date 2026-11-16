@@ -61,9 +61,10 @@ OUTCOME_UA = [   # the agent's attempt outcomes (English, for the log) -> a line
     ("valid", "пройшла норми безпеки"),
 ]
 REJECT_WHY = [   # the agent's own check (feedback is English, for the model) -> the reason in Ukrainian
-    ("night spot", "не та кількість ночівель"),
+    ("night spot(s) are needed", "не та кількість ночівель"),
     ("outside the allowed window", "дата поза дозволеним вікном"),
     ("not one of the candidates", "маршрут не зі списку знайдених"),
+    ("stays HIGH whatever the night spots", "на цьому маршруті в ці дні погода ризикована за будь-яких ночівель"),
     ("repeats attempt", "вона повторює вже відхилену спробу"),
     ("not a night spot", "ночівля не з цього маршруту"),
 ]
@@ -160,8 +161,8 @@ def advice(x: dict[str, Any]) -> str:
         m = re.search(r"back the same way to (.+?) is ([\d.]+) km, about ([\d.]+) h", s)
         text = "Заплануйте спуск"
         if m:
-            back = m.group(1) if not re.fullmatch(r"w\d+", m.group(1)) else "попередньої ночівлі"
-            text += f": назад тією ж стежкою до «{back}» — {m.group(2)} км, близько {m.group(3)} год з перервами"
+            back = "попередньої ночівлі" if re.fullmatch(r"w\d+", m.group(1)) else f"«{m.group(1)}»"
+            text += f": назад тією ж стежкою до {back} — {m.group(2)} км, близько {m.group(3)} год з перервами"
         late = re.search(r"Back at about (\d{1,2}:\d{2}), later than ([\d.]+) h before sunset (\d{1,2}:\d{2})", s)
         if late:
             text += (f". Повернення близько {late.group(1)}, а безпечно — за {late.group(2)} год до заходу сонця "
@@ -172,6 +173,24 @@ def advice(x: dict[str, Any]) -> str:
         if m:
             return f"Вийдіть не пізніше {m.group(1)} або оберіть ближчу ночівлю."
     return ADVICE_UA.get(x["code"], "")
+
+
+TOOL_TEXT_UA = [   # Ukrainian tool messages that still name a tool parameter (written for the model)
+    (re.compile(r"\s*і передайте participant_base_gear_kg"), " і впишіть його вагу в запит"),
+]
+
+
+def human_items(items: list[str], names: set[str]) -> list[str]:
+    """Tool texts for the page: sources stripped, parameter names reworded; one still technical is left out."""
+    out = []
+    for text in items:
+        text = strip_sources(text)
+        for pattern, ua in TOOL_TEXT_UA:
+            text = pattern.sub(ua, text)
+        text = re.sub(r"(?<![\w−-])-(?=\d)", "−", text)
+        if text and not looks_technical(text, names):
+            out.append(text)
+    return out
 
 
 def clean_note(text: str, names: set[str]) -> str | None:
@@ -309,7 +328,7 @@ def weather(record: dict[str, Any]) -> dict[str, Any]:
     return {"state": "none", "note": ""}
 
 
-def supplies(record: dict[str, Any]) -> dict[str, Any] | None:
+def supplies(record: dict[str, Any], names: set[str] = frozenset()) -> dict[str, Any] | None:
     s = record.get("supplies") or {}
     if not s:
         return None
@@ -335,8 +354,8 @@ def supplies(record: dict[str, Any]) -> dict[str, Any] | None:
                   {"value": f"{round(s['gas_g_group'])} г", "label": "газу"},
                   {"value": f"{s['tents']}", "label": "намети"}],
         "lines": lines,
-        "gear": [strip_sources(g).replace(" -", " −") for g in s.get("gear_additions") or []],
-        "warnings": [strip_sources(x) for x in s.get("warnings") or []],
+        "gear": human_items(s.get("gear_additions") or [], names),
+        "warnings": human_items(s.get("warnings") or [], names),
     }
 
 
@@ -427,8 +446,11 @@ def map_data(record: dict[str, Any]) -> dict[str, Any] | None:
             marks.append({"kind": "night", "label": f"Ночівля {m['night']} · {point_name(m)}", "lat": m["lat"],
                           "lon": m["lon"], "km": m["km"]})
     for p in (record.get("request") or {}).get("place_points") or []:
-        marks.append({"kind": "place", "label": f"{p['name']} · {p['elevation_m']} м", "lat": p["lat"],
-                      "lon": p["lon"], "km": None})
+        if any(abs(p["lat"] - m["lat"]) < 0.0015 and abs(p["lon"] - m["lon"]) < 0.002 for m in marks):
+            continue   # the wished place is the start, a night spot or the finish: one pin is enough
+        marks.append({"kind": "place", "label": p["name"] + (f" · {p['elevation_m']} м" if p.get("elevation_m")
+                                                             is not None else ""),
+                      "lat": p["lat"], "lon": p["lon"], "km": None})
     return {"tracks": tracks, "profile": profile, "marks": marks}
 
 
@@ -467,7 +489,8 @@ def conclusion(record: dict[str, Any], names: set[str]) -> str:
         state = {k: record.get(k) for k in ("validation", "weather", "status", "proposal")}
         text = (group_conclusion(state["validation"] or {}, state["weather"]) if record.get("status") == "group"
                 else fallback_conclusion(state))
-    return re.sub(r"\b\d{4}-\d{2}-\d{2}\b", lambda m: fmt_date(m.group(0)), text)   # 2026-11-23 -> пн, 23 листопада
+    text = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", lambda m: fmt_date(m.group(0)), text)
+    return re.sub(r"(?<![\w−-])-(?=\d)", "−", text)   # −6.3 °C with a real minus   # 2026-11-23 -> пн, 23 листопада
 
 
 def summary(record: dict[str, Any]) -> dict[str, Any]:
@@ -523,8 +546,8 @@ def present(record: dict[str, Any]) -> dict[str, Any]:
         "understood": understood(r),
         "days": ds,
         "weather": weather(record),
-        "supplies": supplies(record),
-        "documents": [strip_sources(d) for d in v.get("documents") or []],
+        "supplies": supplies(record, names),
+        "documents": human_items(v.get("documents") or [], names),
         "alternatives": alternatives(record),
         "how": how(record, names),
         "sources": ("Маршрути й точки © OpenStreetMap contributors (ODbL) · висоти SRTM · погода Open-Meteo "

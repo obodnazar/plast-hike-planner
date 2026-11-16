@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from plast_agent.understanding import REGION_UA
 from plast_agent.picture import MAP_CREDITS, day_track, leaflet_block, mapy_link, route_track, side_trip_link
 
 STATUS = {
@@ -74,7 +75,7 @@ def request_lines(r: dict[str, Any], notes: list[str]) -> list[str]:
         f"- Група: {SECTION_UA.get(r.get('section'), 'не вказано')}, {people}",
         f"- Дні: {v('days')}, старт {v('start_date')} о {r.get('start_time') or '08:00'}"
         + (f", можна зсунути до {r['date_flexibility_days']} дн. пізніше" if r.get("date_flexibility_days") else ""),
-        f"- Район: {r.get('region') or 'будь-який'}; побажання: "
+        f"- Район: {REGION_UA.get(r.get('region'), r.get('region')) or 'будь-який'}; побажання: "
         + (", ".join(FEATURE_UA.get(f, f) for f in r.get("must_include") or []) or "немає")
         + (f"; місця: {', '.join(r['places'])}" if r.get("places") else ""),
         f"- Обмеження групи: {lim}",

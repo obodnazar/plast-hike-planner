@@ -25,7 +25,7 @@ from plast_agent.plan_store import list_plans, load_plan, new_id, plan_record, s
 from plast_trail.server import mcp as plast_trail_server
 from plast_web.app import create_app
 from plast_web.view import looks_technical, place_names, present
-from test_agent import GOOD, PARSED, REQUEST, FakeLLM, FakeObsidian, run_agent
+from test_agent import GOOD, PARSED, REQUEST, FakeLLM, FakeObsidian, call, run_agent
 
 HIGH = {**GOOD, "start_date": "2026-11-21"}    # valid, but HIGH weather in the recorded forecasts
 BAD = {**GOOD, "route_id": "r1"}               # not one of the candidates
@@ -56,6 +56,11 @@ def records() -> dict[str, dict]:
                               "days": []}
     no_forecast["conclusion"] = "Висновок."
     no_forecast["id"] = new_id()
+    # what Nazar's first real run showed: a supplies warning naming a tool parameter, the model writing «risky»
+    _, s = call("calculate_supplies", {"section": "yunatstvo", "participants": 8, "adults": 2, "dry_nights": 1,
+                                       "day_loads": no_forecast["validation"]["days"]})
+    no_forecast["supplies"]["warnings"] = s.structuredContent["warnings"]
+    no_forecast["conclusion"] = "План має статус risky і не рекомендований до виконання без змін."
     out["no_forecast"] = no_forecast
     return out
 
@@ -202,3 +207,26 @@ def test_frontend_never_inserts_html():
     code = re.sub(r"//.*", "", js)   # the rule is stated in a comment; check the code only
     for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "setAttribute(\"style\""):
         assert sink not in code, sink
+
+
+def test_lessons_from_the_first_real_run(records):
+    """16 Nov, Заросляк – Несамовите: what leaked or read wrong on the page, kept from coming back."""
+    v = present(records["no_forecast"])
+    warnings = " ".join(v["supplies"]["warnings"])
+    assert "participant_base_gear_kg" not in warnings and "впишіть його вагу в запит" in warnings
+    assert "risky" not in v["conclusion"] and v["conclusion"].startswith("Маршрут «")   # replaced by the code's own
+    cold = present(records["attention"])["conclusion"]                                    # the code's own, with a frost
+    assert "-10.4" not in cold and "−10.4 °C" in cold                                     # a real minus sign
+    record = json.loads(json.dumps(records["attention"]))
+    first = record["attempts"][-1]
+    record["attempts"] = [
+        {**first, "n": 1, "outcome": "valid but HIGH weather risk", "feedback": []},
+        {**first, "n": 2, "outcome": "rejected by the agent check", "feedback": [
+            "This repeats attempt 1 (valid but HIGH weather risk): the weather on this route on this date stays "
+            "HIGH whatever the night spots; change the date or the route."]}]
+    how = " ".join(present(record)["how"])
+    assert "погода ризикована за будь-яких ночівель" in how and "не та кількість ночівель" not in how
+    finish = next(m for m in record["route_profile"]["landmarks"] if m["kind"] == "finish")
+    record["request"]["place_points"] = [{"name": "Фініш-озеро", "lat": finish["lat"], "lon": finish["lon"],
+                                          "elevation_m": None}]
+    assert all(m["kind"] != "place" for m in present(record)["map"]["marks"])   # no second pin on the finish

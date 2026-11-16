@@ -216,7 +216,11 @@ def check_proposal(prop: dict[str, Any], state: State) -> tuple[list[str], dict[
                     (norm["route_id"], ids, norm["start_date"])
         same_bad_weather = "HIGH weather" in a["outcome"] and \
             (q["route_id"], q["start_date"]) == (norm["route_id"], norm["start_date"])
-        if same_plan or same_bad_weather:
+        if same_bad_weather:   # the forecast is for the route and the dates; other night spots do not change it
+            problems.append(f"This repeats attempt {a['n']} ({a['outcome']}): the weather on this route on this "
+                            "date stays HIGH whatever the night spots; change the date or the route.")
+            break
+        if same_plan:
             problems.append(f"This repeats attempt {a['n']} ({a['outcome']}); change the night spots, the date "
                             "or the route.")
             break
