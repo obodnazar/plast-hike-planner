@@ -44,16 +44,27 @@ CAUSE_UA = {   # (server, cause) -> (what is wrong, what to do), for the page
 }
 
 
+def _chain(exc: BaseException):
+    """An exception, then its causes: httpx wraps a TLS failure in ConnectError, the reason is underneath."""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        yield exc
+        exc = exc.__cause__ or exc.__context__
+
+
 def connection_cause(exc: BaseException) -> str:
     """unreachable / key / certificate / other, from the exception tree of a failed connection."""
+    found = "other"
     for leaf in _leaves(exc):
-        if isinstance(leaf, httpx.HTTPStatusError) and leaf.response.status_code in (401, 403):
-            return "key"
-        if isinstance(leaf, ssl.SSLError):
-            return "certificate"
-        if isinstance(leaf, (httpx.ConnectError, ConnectionError, OSError)):
-            return "unreachable"
-    return "other"
+        for e in _chain(leaf):
+            if isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (401, 403):
+                return "key"
+            if isinstance(e, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(e) or "SSL" in type(e).__name__:
+                return "certificate"
+            if isinstance(e, (httpx.ConnectError, ConnectionError, OSError)):
+                found = "unreachable"
+    return found
 
 
 def port_open(host: str, port: int) -> bool:

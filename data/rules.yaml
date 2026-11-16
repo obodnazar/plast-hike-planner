@@ -6,7 +6,7 @@
 # accepted as proposals; `value: null` means "no norm": the server reports the number but does not judge it.
 # Questions only Plast can settle (16–17-year-old leaders as adults, ДСНС registration, wartime limits, night
 # movement) are still open: research/plast-norms-research.md, section 5. Source codes [S..] refer to that file.
-# The server reports `rules_status` in every result, so the approval is always visible.
+# find_routes, validate_hike_plan and assess_weather_risk report `rules_status`, so the approval is always visible.
 #
 # How to change a rule: edit `value`, keep `approved: true` only if a leader approved the new value, put the
 # approver in `approved_by` and raise `version`.

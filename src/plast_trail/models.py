@@ -67,7 +67,14 @@ class RiskLevel(str, Enum):
 
 
 # ------------------------------------------------------------------ shared pieces
-class Waypoint(BaseModel):
+class Strict(BaseModel):
+    """Every model of the tool contracts refuses unknown fields: an input with a typo fails with INVALID_INPUT
+    instead of being silently ignored, and every output schema says additionalProperties: false."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class Waypoint(Strict):
     """A point on a route: start, finish, or a point of interest within 300 m of the trail."""
 
     id: str = Field(description="Waypoint id within its route, e.g. 'w12'. Pass these ids to validate_hike_plan.")
@@ -77,7 +84,7 @@ class Waypoint(BaseModel):
     elevation_m: int = Field(description="Height above sea level, m (OSM tag or SRTM profile)")
 
 
-class GeoPoint(BaseModel):
+class GeoPoint(Strict):
     """A point on the map."""
 
     lat: float = Field(description="Latitude, WGS84")
@@ -97,7 +104,7 @@ class OvernightOption(Waypoint):
     water_nearby: bool = Field(description="A spring or drinking water within 300 m along the route")
 
 
-class GroupLimits(BaseModel):
+class GroupLimits(Strict):
     """Extra limits from the leader's request note. They can only make rules stricter."""
 
     model_config = ConfigDict(extra="forbid")
@@ -108,10 +115,9 @@ class GroupLimits(BaseModel):
     max_overnight_elevation_m: int | None = Field(default=None, ge=300, le=2100, description="Highest allowed night spot, m")
 
 
-class DayLoad(BaseModel):
+class DayLoad(Strict):
     """One day of a validated plan: copy km, ascent_m and walking_hours from a validate_hike_plan days[] entry."""
 
-    model_config = ConfigDict(extra="ignore")  # extra fields of days[] (start, end, ...) may be passed and are ignored
 
     km: float = Field(ge=0, le=40, description="Distance of the day, km")
     ascent_m: int = Field(ge=0, le=3000, description="Total climb of the day, m")
@@ -119,7 +125,7 @@ class DayLoad(BaseModel):
 
 
 # ------------------------------------------------------------------ find_routes
-class RouteSummary(BaseModel):
+class RouteSummary(Strict):
     """A candidate route with its numbers and the night spots this section may use."""
 
     id: str = Field(description="Route id; pass it to the other tools")
@@ -145,7 +151,7 @@ class RouteSummary(BaseModel):
                                           "km (straight line). Reaching the place is a side trip; tell the user")
 
 
-class FindRoutesResult(BaseModel):
+class FindRoutesResult(Strict):
     rules_status: str = Field(description="DRAFT or approved status of the rules used; tell it to the user")
     daily_km_target: float = Field(description="Daily distance the ranking aims for: the rules, or the group limit if stricter")
     daily_km_limit: float | None = Field(description="Hard daily limit: the section rule, or the group limit if stricter")
@@ -156,7 +162,7 @@ class FindRoutesResult(BaseModel):
 
 
 # ------------------------------------------------------------------ validate_hike_plan
-class Violation(BaseModel):
+class Violation(Strict):
     """One broken rule or warning."""
 
     code: ViolationCode = Field(description="Stable rule code")
@@ -169,7 +175,7 @@ class Violation(BaseModel):
     suggestion: str = Field(description="Concrete way to fix the plan; may name waypoint ids")
 
 
-class OvernightCheck(BaseModel):
+class OvernightCheck(Strict):
     """Checks of the night spot at the end of a day."""
 
     waypoint: Waypoint = Field(description="The night spot")
@@ -177,7 +183,7 @@ class OvernightCheck(BaseModel):
     ridge_risk: bool = Field(description="Night spot on a crest or top: near the highest point within ±1 km and the ground drops ≥30 m on both sides")
 
 
-class DayPlan(BaseModel):
+class DayPlan(Strict):
     """Numbers of one day, all computed from the route's elevation profile."""
 
     day: int = Field(description="Day number, 1-based")
@@ -197,7 +203,7 @@ class DayPlan(BaseModel):
     overnight: OvernightCheck | None = Field(description="Check of the night spot after this day, null on the last day")
 
 
-class ValidationResult(BaseModel):
+class ValidationResult(Strict):
     valid: bool = Field(description="True when there are no error-severity violations")
     rules_status: str = Field(description="DRAFT or approved status of the rules used; tell it to the user")
     route_id: str = Field(description="The checked route")
@@ -213,7 +219,7 @@ class ValidationResult(BaseModel):
 
 
 # ------------------------------------------------------------------ assess_weather_risk
-class Trigger(BaseModel):
+class Trigger(Strict):
     """A forecast value that crossed a threshold."""
 
     code: TriggerCode = Field(description="Which threshold was crossed")
@@ -225,7 +231,7 @@ class Trigger(BaseModel):
     source: str = Field(description="Source of the threshold")
 
 
-class DayWeather(BaseModel):
+class DayWeather(Strict):
     """Forecast and risk for one hiking day."""
 
     day: int = Field(description="Day number, 1-based")
@@ -245,7 +251,7 @@ class DayWeather(BaseModel):
     triggers: list[Trigger] = Field(description="Thresholds crossed on this day")
 
 
-class WeatherResult(BaseModel):
+class WeatherResult(Strict):
     route_id: str = Field(description="The assessed route")
     start_date: str = Field(description="First hiking day, YYYY-MM-DD")
     mode: Literal["live", "replay"] = Field(description="live = fresh Open-Meteo call; replay = recorded genuine response from fixtures/")
@@ -259,7 +265,7 @@ class WeatherResult(BaseModel):
 
 
 # ------------------------------------------------------------------ calculate_supplies
-class Assumption(BaseModel):
+class Assumption(Strict):
     """A coefficient used in the calculation."""
 
     name: str = Field(description="Key in rules.yaml `supplies`")
@@ -267,7 +273,7 @@ class Assumption(BaseModel):
     source: str = Field(description="Where the value comes from")
 
 
-class PackEstimate(BaseModel):
+class PackEstimate(Strict):
     """Weight of one rucksack at the start of the hike."""
 
     personal_gear_kg: float | None = Field(description="Measured base gear without food and water; null if not given")
@@ -280,7 +286,7 @@ class PackEstimate(BaseModel):
     within_limit: bool | None = Field(description="Null when the limit or the gear weight is unknown")
 
 
-class SuppliesResult(BaseModel):
+class SuppliesResult(Strict):
     people: int = Field(description="Participants + adults")
     num_days: int = Field(description="Number of hiking days")
     kcal_per_person_day: int = Field(description="Energy target for a participant of this section")
@@ -303,7 +309,7 @@ class SuppliesResult(BaseModel):
 PlaceKind = Literal["peak", "lake", "spring", "hut", "shelter", "campsite", "village", "town", "locality"]
 
 
-class PlaceCandidate(BaseModel):
+class PlaceCandidate(Strict):
     name: str = Field(description="Name as in OpenStreetMap; pass it to find_routes(places=...) as is")
     kind: PlaceKind = Field(description="peak, lake, spring, hut, shelter, campsite, village, town, or locality (polonyna, urochyshche)")
     region: Region = Field(description="Mountain area by the nearest region centre (the routes' rule)")
@@ -316,7 +322,7 @@ class PlaceCandidate(BaseModel):
     score: float = Field(description="Similarity of the written name to this place's name, 0-1")
 
 
-class PlaceResolution(BaseModel):
+class PlaceResolution(Strict):
     query: str = Field(description="The name as written in the request")
     status: Literal["found", "corrected", "ambiguous", "not_found"] = Field(
         description="found: the name matches as written (the best match is `best`); corrected: a misspelling, "
@@ -326,13 +332,13 @@ class PlaceResolution(BaseModel):
     alternatives: list[PlaceCandidate] = Field(description="Other places with a similar name, best first (up to 3)")
 
 
-class ResolvePlacesResult(BaseModel):
+class ResolvePlacesResult(Strict):
     results: list[PlaceResolution] = Field(description="One entry per requested name, in the same order")
     gazetteer_size: int = Field(description="Named places in the dataset")
     source: str = Field(description="Data source and licence")
 
 
-class ProfileDay(BaseModel):
+class ProfileDay(Strict):
     day: int = Field(description="Day number, 1-based")
     start_km: float = Field(description="Route km where the day starts")
     end_km: float = Field(description="Route km where the day ends")
@@ -344,7 +350,7 @@ class ProfileDay(BaseModel):
     points: list[list[float]] = Field(description="Profile of the day every 250 m: [km, lat, lon, elevation_m]")
 
 
-class Landmark(BaseModel):
+class Landmark(Strict):
     id: str = Field(description="Waypoint id on this route")
     kind: WaypointKind = Field(description="start, finish, water, hut, shelter, campsite, peak or lake")
     name: str = Field(description="Name from OpenStreetMap; may be empty")
@@ -355,7 +361,7 @@ class Landmark(BaseModel):
     night: int | None = Field(description="Night number if the group sleeps here, else null")
 
 
-class RouteProfileResult(BaseModel):
+class RouteProfileResult(Strict):
     route_id: str = Field(description="Route id")
     route_name: str = Field(description="Route name from OpenStreetMap")
     length_km: float = Field(description="Route length, km")

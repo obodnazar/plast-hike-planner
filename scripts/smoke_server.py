@@ -88,6 +88,8 @@ async def main() -> None:
                       f"left for gear {pk['remaining_for_gear_kg']} kg; warnings: {len(sup['warnings'])}")
 
             show("ERROR CASE unknown route", await s.call_tool("validate_hike_plan", {**plan, "route_id": "r1"}))
+            show("ERROR CASE unknown night spot", await s.call_tool("validate_hike_plan",
+                                                                    {**plan, "overnight_waypoint_ids": ["w9999"]}))
             show("ERROR CASE night spots out of order",
                  await s.call_tool("validate_hike_plan", {**plan, "overnight_waypoint_ids": ["w56", "w30"]}))
             show("ERROR CASE schema: days=0", await s.call_tool("find_routes", {"section": "yunatstvo", "days": 0}))

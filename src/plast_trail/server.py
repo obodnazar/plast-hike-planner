@@ -227,7 +227,7 @@ def calculate_supplies(
 ) -> SuppliesResult:
     if dry_nights > len(day_loads) - 1:
         raise DomainError("INVALID_INPUT", f"dry_nights={dry_nights} but a {len(day_loads)}-day plan has only "
-                          f"{len(day_loads) - 1} night(s).", "Pass validate_hike_plan dry_nights.").to_tool_error()
+                          f"{len(day_loads) - 1} night(s).", "Pass validate_hike_plan dry_nights.")
     return supplies.calculate_supplies(section.value, participants, adults, day_loads, dry_nights, night_min_c,
                                        tent_capacity, lightest_body_weight_kg, participant_base_gear_kg,
                                        adult_base_gear_kg)
