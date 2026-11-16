@@ -1,0 +1,4 @@
+# One line-ending style everywhere, so a Windows checkout does not rewrite the files
+* text=auto eol=lf
+*.png binary
+*.jpg binary

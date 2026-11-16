@@ -145,7 +145,7 @@ def next_quota_reset(now: datetime | None = None) -> datetime:
 
 def quota_exhausted_now() -> bool:
     try:
-        until = datetime.fromisoformat(json.loads(QUOTA_FILE.read_text())["exhausted_until"])
+        until = datetime.fromisoformat(json.loads(QUOTA_FILE.read_text(encoding="utf-8"))["exhausted_until"])
     except (OSError, ValueError, KeyError):
         return False
     return datetime.now(timezone.utc) < until
@@ -153,7 +153,7 @@ def quota_exhausted_now() -> bool:
 
 def remember_quota_exhausted() -> None:
     QUOTA_FILE.parent.mkdir(exist_ok=True)
-    QUOTA_FILE.write_text(json.dumps({"exhausted_until": next_quota_reset().isoformat()}))
+    QUOTA_FILE.write_text(json.dumps({"exhausted_until": next_quota_reset().isoformat()}), encoding="utf-8")
 
 
 def free_requests_left(settings: Settings) -> int | None:
@@ -172,7 +172,8 @@ def ollama_status(settings: Settings) -> tuple[bool, str]:
     try:
         tags = httpx.get(f"{root}/api/tags", timeout=3).json().get("models", [])
     except Exception:
-        return False, "Ollama не запущена (відкрийте застосунок Ollama)."
+        return False, ("Ollama не запущена або не встановлена: відкрийте застосунок Ollama "
+                       "(встановити: https://ollama.com).")
     names = {m["name"] for m in tags} | {m["name"].removesuffix(":latest") for m in tags}
     if settings.ollama_model not in names:
         return False, (f"Ollama працює, але моделі {settings.ollama_model} немає. Створіть її: "
@@ -181,7 +182,8 @@ def ollama_status(settings: Settings) -> tuple[bool, str]:
 
 
 def build_providers(settings: Settings, with_ollama: bool) -> list[Provider]:
-    providers = [Provider(
+    """OpenRouter if there is a key, then the local Ollama model. No key and no Ollama gives an empty list."""
+    providers = [] if not settings.openrouter_api_key else [Provider(
         name="openrouter", model=settings.openrouter_model,
         chat=ChatOpenAI(model=settings.openrouter_model, api_key=settings.openrouter_api_key,
                         base_url=settings.openrouter_base_url, temperature=0, timeout=75, max_retries=1,

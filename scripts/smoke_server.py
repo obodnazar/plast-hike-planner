@@ -71,6 +71,12 @@ async def main() -> None:
                 print(f"  mode={wr['mode']} overall={wr['overall_risk']} "
                       f"days={[(d['date'], d['risk'], [t['code'] for t in d['triggers']]) for d in wr['days']]}")
 
+            prof = show("get_route_profile", await s.call_tool("get_route_profile", {
+                "route_id": plan["route_id"], "overnight_waypoint_ids": plan["overnight_waypoint_ids"]}))
+            if prof:
+                print("  " + "; ".join(f"day {d['day']}: {d['km']} km, +{d['ascent_m']}/-{d['descent_m']} m, "
+                                       f"steep {d['steep_km']} km, {len(d['points'])} points" for d in prof["days"]))
+
             sup = show("calculate_supplies", await s.call_tool("calculate_supplies", {
                 "section": "yunatstvo", "participants": 10, "adults": 2,
                 "day_loads": [{"km": d["km"], "ascent_m": d["ascent_m"], "walking_hours": d["walking_hours"]} for d in v["days"]],

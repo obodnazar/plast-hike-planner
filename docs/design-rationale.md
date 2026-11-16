@@ -21,7 +21,7 @@ flowchart LR
     OM --- V
   end
   subgraph PT["plast-trail (separate Python process)"]
-    S["FastMCP server<br/>http://127.0.0.1:8770/mcp<br/>4 tools"]
+    S["FastMCP server<br/>http://127.0.0.1:8770/mcp<br/>6 tools"]
     D[("routes.json · rules.yaml<br/>fixtures/open-meteo")]
     S --- D
   end
@@ -39,7 +39,7 @@ flowchart LR
 | Obsidian MCP | reading the request, listing requests, writing the plan, appending a link | planning |
 | plast-trail MCP | dataset, rules, computation, forecast access, rate limiting, fixtures | conversation, prompts |
 
-Both MCP connections are discovered at start-up (`initialize` + `tools/list`; 20 + 4 tools are printed) and used through `tools/call` only.
+Both MCP connections are discovered at start-up (`initialize` + `tools/list`; 20 + 6 tools are printed) and used through `tools/call` only.
 
 ## 3. Why Obsidian is the existing server
 

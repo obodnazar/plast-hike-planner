@@ -12,12 +12,18 @@ dependencies = [
     "pydantic>=2.11",
     "pyyaml>=6.0",
     "python-dotenv>=1.1",
+    # Windows has no system time-zone database: without this ZoneInfo("Europe/Kyiv") fails at import
+    "tzdata>=2024.1",
 ]
 
 [project.scripts]
 plast-trail = "plast_trail.server:main"
 plast-agent = "plast_agent.cli:main"
 check-obsidian = "plast_agent.check_obsidian:main"
+
+[tool.uv]
+# cryptography 49+ ships no ready-made wheel for Intel Macs (it would need a Rust toolchain to build)
+constraint-dependencies = ["cryptography<49"]
 
 [dependency-groups]
 dev = ["pytest>=8"]

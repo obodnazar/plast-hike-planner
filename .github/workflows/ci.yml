@@ -1,0 +1,26 @@
+# The project must start on another machine: install from the lock file, run the tests
+# (they include starting the MCP server as a separate process and calling it over HTTP).
+name: tests
+
+on:
+  push:
+    branches: [main, portability, web]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install (versions from uv.lock; uv brings its own Python)
+        run: uv sync --locked
+      - name: Tests
+        run: uv run pytest -q

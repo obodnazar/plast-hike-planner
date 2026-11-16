@@ -17,7 +17,7 @@ import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-from plast_agent.config import ConfigError, load_settings
+from plast_agent.config import ConfigError, load_settings, utf8_output
 
 TEST_NOTE = "Про цей vault.md"
 
@@ -94,6 +94,7 @@ async def check() -> int:
 
 
 def main() -> None:
+    utf8_output()
     sys.exit(asyncio.run(check()))
 
 

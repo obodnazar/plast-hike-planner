@@ -11,7 +11,7 @@ An agent that plans hikes for Plast (Ukrainian scouting) groups in the Ukrainian
 | | |
 |---|---|
 | **Existing MCP server** | Obsidian, via the plugin *Local REST API with MCP* (approved project `coddingtonbear/obsidian-local-rest-api`) |
-| **Custom MCP server** | `plast-trail`, a separate process with 4 tools over OpenStreetMap routes, Plast rules and Open-Meteo forecasts |
+| **Custom MCP server** | `plast-trail`, a separate process with 6 tools over OpenStreetMap routes, Plast rules and Open-Meteo forecasts |
 | **Agent** | LangGraph workflow + official `mcp` Python SDK client; model via OpenRouter (default `nvidia/nemotron-3.5-super-vl:free`) |
 
 ## Architecture
@@ -64,7 +64,7 @@ Obsidian tools used and their contracts: **[docs/obsidian-contract.md](docs/obsi
 
 | Document | Content |
 |---|---|
-| [docs/tool-contracts.md](docs/tool-contracts.md) | Contracts of the 4 custom tools, generated from the live server |
+| [docs/tool-contracts.md](docs/tool-contracts.md) | Contracts of the 6 custom tools, generated from the live server |
 | [docs/obsidian-contract.md](docs/obsidian-contract.md) | The existing server: configuration, role, `vault_read` / `vault_list` / `vault_write` / `vault_append`, failure behaviour |
 | [docs/design-rationale.md](docs/design-rationale.md) | Why Obsidian, why each tool is an MCP tool, how the tools support the workflow, trade-offs, limitations |
 | [docs/data-and-replay.md](docs/data-and-replay.md) | Data sources and licences, how the dataset is built, fixtures and replay mode, rate limits, secrets |
@@ -73,9 +73,16 @@ Obsidian tools used and their contracts: **[docs/obsidian-contract.md](docs/obsi
 | [research/](research/) | Research behind the Plast rules (51 sources) and the approval sheet |
 
 ## Prerequisites
-- macOS or Linux with [uv](https://docs.astral.sh/uv/) (installs Python 3.12 by itself)
+- [uv](https://docs.astral.sh/uv/) (installs Python 3.12 by itself). Platforms:
+  - macOS on Apple silicon: developed and tested here;
+  - Windows x64, Linux x64/arm64 and Intel Macs: the tests run in CI (`.github/workflows/ci.yml`), and ready-made wheels exist for every dependency;
+  - Windows on ARM is not supported (no wheels).
 - [Obsidian](https://obsidian.md) 1.15+ with the community plugin **Local REST API with MCP** (tested: plugin 5.5.2, Obsidian 1.15.1)
-- An [OpenRouter](https://openrouter.ai) API key. The default free model needs no credit (20 requests/min, 50/day); one agent run uses 3–6 model calls.
+- A model, one of:
+  - an [OpenRouter](https://openrouter.ai) API key. The default free model needs no credit (20 requests/min, 50/day); one agent run uses 3–6 model calls;
+  - the local Ollama model (step 5 below; a 9.5 GB download, 16 GB RAM). With no OpenRouter key the agent runs on it alone.
+
+The custom server and the tests need none of this: after `uv sync`, `uv run pytest -q` and `uv run plast-trail` work with no `.env`, no Obsidian and no key.
 
 ## Installation and configuration
 ```bash
@@ -99,7 +106,7 @@ cp .env.example .env         # then fill in OPENROUTER_API_KEY and OBSIDIAN_API_
 
 | Variable (`.env`) | Default | Meaning |
 |---|---|---|
-| `OPENROUTER_API_KEY` | — | required |
+| `OPENROUTER_API_KEY` | — | the cloud model; may stay empty if the local Ollama model is set up |
 | `OPENROUTER_MODEL` | `nvidia/nemotron-3.5-super-vl:free` | any OpenRouter model with tool calling |
 | `OBSIDIAN_API_KEY` | — | required; from the plugin settings |
 | `OBSIDIAN_MCP_URL` | `https://127.0.0.1:27124/mcp/` | the plugin's MCP endpoint |
@@ -130,7 +137,9 @@ Model calls have hard deadlines (120 s for parsing and proposals, 45 s for the c
 The server can also be inspected with any MCP client, e.g. `npx @modelcontextprotocol/inspector` → Streamable HTTP → `http://127.0.0.1:8770/mcp`.
 
 ## Offline / replay mode
-Weather is the only network call at runtime. In `replay` mode, the server reads genuine Open-Meteo responses recorded in `fixtures/open-meteo/` (one per route, 16 days) and passes them through the same parser and scoring as a live response. Re-record shortly before a demo:
+Weather is the only network call at runtime. In `replay` mode, the server reads genuine Open-Meteo responses recorded in `fixtures/open-meteo/` (one per route, 16 days) and passes them through the same parser and scoring as a live response.
+
+**The committed recordings cover hikes within 14–29 Nov 2026 only.** For any other dates either run the server with `WEATHER_MODE=live` (needs internet; Open-Meteo forecasts reach 16 days ahead) or record again. Outside the covered dates the plan is still made, with the weather marked as unknown. Re-record shortly before a demo:
 ```bash
 uv run python scripts/record_weather.py
 ```
@@ -138,8 +147,8 @@ Details and rate limits: [docs/data-and-replay.md](docs/data-and-replay.md).
 
 ## Checks
 ```bash
-uv run pytest -q                          # 123 tests: domain logic, schemas over in-memory MCP, the agent, request understanding, the evaluation (no network)
-uv run python scripts/smoke_server.py     # all 4 tools over real MCP, incl. error cases and an empty result
+uv run pytest -q                          # 129 tests: domain logic, schemas over in-memory MCP, the agent, request understanding, the evaluation, portability (no network)
+uv run python scripts/smoke_server.py     # all 6 tools over real MCP, incl. error cases and an empty result
 uv run check-obsidian                     # Obsidian discovery + one vault_read
 uv run python scripts/reset_demo.py       # clean the demo vault before a rehearsal (plans, pictures, tracks)
 uv run python scripts/offline_check.py "Запити/<request>.md"   # a run with no internet + the local model, every output checked

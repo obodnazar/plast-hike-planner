@@ -63,7 +63,7 @@ def main() -> None:
         path = RAW / name
         if not path.exists():
             sys.exit(f"{path} is missing: run scripts/build_dataset.py first (it downloads and caches OSM data).")
-        elements += json.loads(path.read_text())["elements"]
+        elements += json.loads(path.read_text(encoding="utf-8"))["elements"]
 
     places: list[dict] = []
     for el in elements:

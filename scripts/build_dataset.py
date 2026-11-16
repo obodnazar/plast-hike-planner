@@ -65,7 +65,7 @@ REGIONS = {
 def overpass(query: str, cache_name: str) -> dict:
     cache = RAW / cache_name
     if cache.exists():
-        return json.loads(cache.read_text())
+        return json.loads(cache.read_text(encoding="utf-8"))
     delay = 10
     for attempt in range(6):
         url = OVERPASS[attempt % len(OVERPASS)]
@@ -73,7 +73,7 @@ def overpass(query: str, cache_name: str) -> dict:
             r = httpx.post(url, data={"data": query}, timeout=180,
                            headers={"User-Agent": USER_AGENT})
             if r.status_code == 200 and r.text.lstrip().startswith("{"):
-                cache.write_text(r.text)
+                cache.write_text(r.text, encoding="utf-8")
                 return r.json()
             print(f"  overpass {url} -> HTTP {r.status_code}, retry in {delay}s")
         except httpx.HTTPError as exc:
@@ -93,7 +93,7 @@ def fetch_elevations(points: list[tuple[float, float]]) -> dict[str, float]:
     The cache is saved after every batch, so an interrupted run resumes where it stopped.
     """
     cache_file = RAW / "elevation_cache.json"
-    cache: dict[str, float] = json.loads(cache_file.read_text()) if cache_file.exists() else {}
+    cache: dict[str, float] = json.loads(cache_file.read_text(encoding="utf-8")) if cache_file.exists() else {}
     missing = sorted({_key(p) for p in points} - cache.keys())
     print(f"elevation: {len(missing)} points to fetch ({len(cache)} cached)")
     for i in range(0, len(missing), 100):
@@ -116,7 +116,7 @@ def fetch_elevations(points: list[tuple[float, float]]) -> dict[str, float]:
         for k, res in zip(batch, r.json()["results"], strict=True):
             if res.get("elevation") is not None:  # SRTM has rare voids; skip them
                 cache[k] = res["elevation"]
-        cache_file.write_text(json.dumps(cache))
+        cache_file.write_text(json.dumps(cache), encoding="utf-8")
         print(f"  elevation {min(i + 100, len(missing))}/{len(missing)}")
         time.sleep(1.1)
     return cache
@@ -451,7 +451,7 @@ def main() -> None:
         "route_count": len(built),
         "skipped": skipped,
     }
-    OUT.write_text(json.dumps({"meta": meta, "routes": built}, ensure_ascii=False, separators=(",", ":")))
+    OUT.write_text(json.dumps({"meta": meta, "routes": built}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     print(f"wrote {OUT.relative_to(ROOT)}: {len(built)} routes; skipped {skipped}")
 
 

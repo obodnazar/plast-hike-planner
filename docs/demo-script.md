@@ -48,7 +48,7 @@ uv run plast-trail
 ```bash
 uv run plast-agent "Запити/Мандрівка гуртка Сокіл.md"
 ```
-- **Крок 0:** `✓ obsidian ... 20 tools`, `✓ plast-trail ... 4 tools`. Це discovery: `initialize` + `tools/list` для обох серверів.
+- **Крок 0:** `✓ obsidian ... 20 tools`, `✓ plast-trail ... 6 tools`. Це discovery: `initialize` + `tools/list` для обох серверів.
 - **Крок 1:** `obsidian.vault_read(...)`. Це успішний виклик інструмента існуючого сервера.
 
 > **Контракт `vault_read` (сказати коротко):** «Обов'язковий аргумент один: `path`, шлях до нотатки від кореня vault. За бажанням можна прочитати лише розділ нотатки (`targetType`/`target`). Повертає JSON: текст нотатки, frontmatter, теги, посилання й мітку версії. Побічних ефектів немає. Помилки: якщо нотатки немає — `isError` і "File not found"; неправильний ключ — HTTP 401; закритий Obsidian — немає з'єднання.»
@@ -70,7 +70,7 @@ uv run plast-agent "Запити/Мандрівка гуртка Сокіл.md"
 
 Відкрий в Obsidian `Плани/Мандрівка гуртка Сокіл — план.md`: таблиця днів, погода, запаси, документи, розділ **«Як агент дійшов до цього плану»** з усіма спробами.
 
-**Доказ, що інструментів ≥ 3 (пункт 7):** у кроці 0 видно `4 tools: find_routes, validate_hike_plan, assess_weather_risk, calculate_supplies`. За бажанням у терміналі 2:
+**Доказ, що інструментів ≥ 3 (пункт 7):** у кроці 0 видно `6 tools: find_routes, resolve_places, validate_hike_plan, assess_weather_risk, calculate_supplies, get_route_profile`. Чотири з них — це більше, ніж пошук: перевірка норм, оцінка погоди, розрахунок запасів і довідник назв з виправленням помилок. За бажанням у терміналі 2:
 ```bash
 uv run python scripts/smoke_server.py | head -8     # кожен інструмент з input/output схемою
 ```
@@ -143,7 +143,7 @@ uv run python scripts/smoke_server.py | sed -n '/ERROR CASE/,$p'
 | `vault_write` | створює або перезаписує `Плани/<запит> — план.md` |
 | `vault_append` | дописує рядок зі статусом і посиланням у нотатку-запит |
 | `vault_read`, `vault_list` | немає |
-| 4 інструменти `plast-trail` | немає (лише читання локальних даних) |
+| 6 інструментів `plast-trail` | немає (лише читання локальних даних) |
 | `assess_weather_risk` у `live` | мережевий запит до Open-Meteo, нічого не пише (записом прогнозів займається окремий скрипт `record_weather.py`) |
 
 ### Ймовірні питання

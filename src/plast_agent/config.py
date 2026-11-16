@@ -7,6 +7,7 @@ instead of surfacing later as an opaque 401 in the middle of a run.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,6 +35,14 @@ class Settings:
     obsidian_leaflet: str = "0"   # 1 = the Obsidian Leaflet plugin is installed: add an interactive map to plans
 
 
+def utf8_output() -> None:
+    """Print Ukrainian text and box characters whatever the console encoding is. On Windows a redirected
+    stdout (`> log.txt`, a subprocess pipe) is cp1251/cp1252 and the first «━━» would raise UnicodeEncodeError."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
@@ -58,7 +67,7 @@ def load_settings(*, need_model: bool = True) -> Settings:
         )
 
     openrouter_key = _env("OPENROUTER_API_KEY")
-    if need_model and not openrouter_key:
+    if need_model and not openrouter_key:   # the agent itself can also run on the local model only (cli.make_llm)
         raise ConfigError(
             "OPENROUTER_API_KEY is empty. Create a key at "
             "https://openrouter.ai/settings/keys and put it into .env."

@@ -257,6 +257,9 @@ def main() -> None:
     parser.add_argument("--stdio", action="store_true", help="serve over stdio instead of HTTP")
     args = parser.parse_args()
 
+    for stream in (sys.stdout, sys.stderr):   # Ukrainian place names in the log, whatever the console encoding
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         datefmt="%H:%M:%S", stream=sys.stderr, force=True)
     try:

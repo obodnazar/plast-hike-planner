@@ -19,7 +19,7 @@ import time
 import traceback
 from pathlib import Path
 
-from plast_agent.config import PROJECT_ROOT, ConfigError, load_settings
+from plast_agent.config import PROJECT_ROOT, ConfigError, load_settings, utf8_output
 from plast_agent.chat import chat
 from plast_agent import llm as llm_mod
 from plast_agent.llm import LLM, LLMError
@@ -33,11 +33,16 @@ BOLD, RED, GREEN, YELLOW, RESET = "\033[1m", "\033[31m", "\033[32m", "\033[33m",
 
 def make_llm(settings, local: bool = False) -> LLM:
     """Pick where the model answers from, and say it: quota left today, fallback ready or not."""
-    if local:
+    has_key = bool(settings.openrouter_api_key)
+    if local or not has_key:   # no cloud key is fine while the local model is there
         usable, local_msg = llm_mod.ollama_status(settings)
+        if not has_key and not local:
+            print(f"  {YELLOW}OPENROUTER_API_KEY порожній: працюю лише на локальній моделі.{RESET}")
         print(f"  Модель: лише локальна ({local_msg})")
         if not usable:
-            raise LLMError(local_msg)
+            raise LLMError(local_msg if has_key else
+                           "Немає жодної моделі. Впишіть OPENROUTER_API_KEY у .env (безкоштовний ключ: "
+                           f"https://openrouter.ai/settings/keys) або налаштуйте локальну модель: {local_msg}")
         return LLM(providers=llm_mod.build_providers(settings, True), start_with_fallback=True)
     left = llm_mod.free_requests_left(settings)
     usable, local_msg = llm_mod.ollama_status(settings) if settings.ollama_enabled else (False, "запасна модель вимкнена")
@@ -149,7 +154,7 @@ async def plan_and_write(links: McpLinks, settings, request_path: str | None, dr
 async def run(request_path: str | None, list_only: bool, dry_run: bool, chat_mode: bool = False,
               local: bool = False) -> int:
     try:
-        settings = load_settings(need_model=not list_only)
+        settings = load_settings(need_model=False)   # the model is chosen in make_llm: cloud key or local model
     except ConfigError as exc:
         print(f"{RED}Configuration error:{RESET} {exc}")
         return 2
@@ -191,6 +196,7 @@ def main() -> None:
     args = ap.parse_args()
     if not args.list and not args.request and not args.chat:
         ap.error("give a request note path, or --chat, or --list")
+    utf8_output()
     sys.exit(asyncio.run(run(args.request, args.list, args.dry_run, args.chat, args.local)))
 
 
