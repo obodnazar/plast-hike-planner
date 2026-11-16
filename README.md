@@ -41,7 +41,7 @@ Workflow:
 5. `validate_hike_plan`. If the plan is invalid, the violations with suggested waypoint ids go back to step 4.
 6. `assess_weather_risk`. If the risk is high, the code probes the other allowed dates and goes back to step 4.
 7. `calculate_supplies`.
-8. LLM writes a conclusion.
+8. Code writes the conclusion from the tool results (the model does not).
 9. `vault_write` the plan and `vault_append` a link into the request (Obsidian).
 
 The model only chooses; every number comes from a tool. Details: [docs/design-rationale.md](docs/design-rationale.md).
@@ -158,8 +158,8 @@ no model, no Obsidian and no MCP server; the map tiles and Leaflet need internet
 shown instead).
 
 Everything on the page passes one boundary, `plast_web/view.py: present()`: the agent's ids (`r8613349`, `w30`),
-codes (`ENDS_ON_TOP`), source tags and English tool messages become Ukrainian text there, and a model conclusion
-that contains any of them is replaced by one written from the tool results. The server listens on 127.0.0.1 only,
+codes (`ENDS_ON_TOP`), source tags and English tool messages become Ukrainian text there. New plans get their conclusion from code; a
+conclusion saved by an older version that contains any technical text is replaced by one written from the tool results. The server listens on 127.0.0.1 only,
 refuses other `Host`/`Origin` headers and sends a strict Content-Security-Policy; the page inserts data only as text.
 
 ## Offline / replay mode
@@ -173,7 +173,7 @@ Details and rate limits: [docs/data-and-replay.md](docs/data-and-replay.md).
 
 ## Checks
 ```bash
-uv run pytest -q                          # 180 tests: domain logic, schemas over in-memory MCP, the agent, request understanding, the evaluation, portability, the plan pages, the web chat (no network)
+uv run pytest -q                          # 183 tests: domain logic, schemas over in-memory MCP, the agent, request understanding, the evaluation, portability, the plan pages, the web chat (no network)
 uv run plast-web                          # chat and saved plans in the browser (see above)
 uv run python scripts/smoke_server.py     # all 6 tools over real MCP, incl. error cases and an empty result
 uv run check-obsidian                     # Obsidian discovery + one vault_read

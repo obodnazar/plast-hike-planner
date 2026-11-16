@@ -10,7 +10,7 @@ A Plast (Ukrainian scouting) leader planning a multi-day hike has to combine sev
 flowchart LR
   subgraph Agent["plast-agent (Python process)"]
     WF["LangGraph workflow<br/>(fixed step order, loops)"]
-    LLM["LLM via OpenRouter<br/>parse · propose · conclude"]
+    LLM["LLM via OpenRouter<br/>parse · propose"]
     MC["MCP client<br/>(official mcp SDK)"]
     WF --- LLM
     WF --- MC
@@ -34,7 +34,7 @@ flowchart LR
 | Layer | Owns | Does not own |
 |---|---|---|
 | Agent workflow (`src/plast_agent/workflow.py`) | order of steps, loop limits, what goes into each prompt, the feedback assembled from tool results | any domain number, rules, data access |
-| LLM | understanding the free-text request; choosing route, night spots and start date; the final paragraph | km, ascent, times, risk levels (always taken from tools) |
+| LLM | understanding the free-text request; choosing route, night spots and start date | km, ascent, times, risk levels (always taken from tools) |
 | MCP client (`mcp_links.py`) | sessions, discovery, call logging, turning `isError` into exceptions and connection failures into sentences | business logic |
 | Obsidian MCP | reading the request, listing requests, writing the plan, appending a link | planning |
 | plast-trail MCP | dataset, rules, computation, forecast access, rate limiting, fixtures | conversation, prompts |
@@ -74,7 +74,7 @@ read note (Obsidian) → LLM: parse → code checks → resolve_places → find_
       ↑                                                   │ invalid: violations + suggested waypoint ids
       └──────────────── back to propose ◄─────────────────┘
 validate OK → assess_weather_risk → high? probe other allowed start dates (same tool) → back to propose
-            → calculate_supplies → get_route_profile → LLM: conclusion
+            → calculate_supplies → get_route_profile → code: conclusion
             → vault_write route picture (SVG) + plan note embedding it, vault_append link (Obsidian)
 ```
 
