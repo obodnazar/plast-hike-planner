@@ -19,7 +19,7 @@ from typing import Any
 from urllib.parse import quote
 
 from plast_agent.picture import day_track, mapy_link, route_track, side_trip_link
-from plast_agent.render import FEATURE_UA, KIND_UA, SECTION_UA, VIOLATION_UA, violation_ua
+from plast_agent.render import FEATURE_UA, KIND_UA, SECTION_UA, VIOLATION_UA, rules_note, violation_ua
 from plast_agent.understanding import REGION_UA
 from plast_agent.workflow import GROUP_CODES, SAFETY_ORDER, fallback_conclusion, group_conclusion
 
@@ -551,7 +551,8 @@ def present(record: dict[str, Any]) -> dict[str, Any]:
         "alternatives": alternatives(record),
         "how": how(record, names),
         "sources": ("Маршрути й точки © OpenStreetMap contributors (ODbL) · висоти SRTM · погода Open-Meteo "
-                    "(CC BY 4.0) · карта OpenTopoMap (CC-BY-SA)"),
+                    "(CC BY 4.0) · карта OpenTopoMap (CC-BY-SA)"
+                    + (" · " + rules_note(v["rules_status"]) if v.get("rules_status", "").startswith("approved") else "")),
         "map": map_data(record),
         "links": links(record),
         "tech": tech(record),

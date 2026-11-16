@@ -316,7 +316,7 @@ async def custom_contracts() -> list[str]:
          "## Server", "",
          "- **Process:** separate, started with `uv run plast-trail` (streamable HTTP, `http://127.0.0.1:8770/mcp`; `--stdio` also available).",
          "- **Data:** `data/routes.json` (121 OSM routes + SRTM heights), `data/places.json` (1494 named places, "
-         "the gazetteer), `data/rules.yaml` (DRAFT norms with sources), "
+         "the gazetteer), `data/rules.yaml` (norms with sources, approved for the project 16.11.2026), "
          "Open-Meteo forecasts (live / record / replay).",
          "- **Server instructions** (sent at `initialize`) describe the typical flow: resolve place names → find → validate (loop) → weather (loop) → supplies → (optional) route profile for a picture.", "",
          "## Error model (all tools)", "",

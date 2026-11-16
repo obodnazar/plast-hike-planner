@@ -1,84 +1,88 @@
 # Plast hike safety rules used by the plast-trail MCP server.
 #
-# STATUS: DRAFT. Every value below is a PROPOSAL from research/plast-norms-research.md
-# (section 4) and is NOT yet approved by a Plast leader. Source codes [S..] refer to that file.
-# The server reports `rules_status` in every validation result, so a draft can never pass
-# silently as an official norm.
+# STATUS: APPROVED for this project on 16.11.2026 by Назар, the leader who owns it ("затвердити все як є"),
+# after reviewing every value with its source. Approval means these are the project's working norms; it does
+# NOT mean Plast adopted them. Values whose `source` starts with "PROPOSAL" had no Plast source and were
+# accepted as proposals; `value: null` means "no norm": the server reports the number but does not judge it.
+# Questions only Plast can settle (16–17-year-old leaders as adults, ДСНС registration, wartime limits, night
+# movement) are still open: research/plast-norms-research.md, section 5. Source codes [S..] refer to that file.
+# The server reports `rules_status` in every result, so the approval is always visible.
 #
-# How to change a rule: edit `value`, set `approved: true`, and put the approver in `approved_by`.
+# How to change a rule: edit `value`, keep `approved: true` only if a leader approved the new value, put the
+# approver in `approved_by` and raise `version`.
 # `severity: error` makes the plan invalid; `severity: warning` is shown but does not block.
-# `value: null` means "no norm found": the server reports the number but does not judge it.
 
-version: "2026-11-14-draft"
-status: draft
-approved_by: null
+version: "2026-11-16"
+status: approved
+approved_by: "Назар"
+approved_on: "2026-11-16"
 
 sections:
   novatstvo:
     label: "Новацтво (6–11)"
-    km_per_day_max:        {value: 10,   severity: error,   approved: false, source: "PROPOSAL: derived (half of the youth mountain standard), no Plast source"}
-    walking_hours_per_day_max: {value: 5, severity: error,   approved: false, source: "PROPOSAL: [S33] German Alpine Club, up to 5 h walking for children 6+"}
-    ascent_per_day_max:    {value: null, severity: warning, approved: false, source: "no source found anywhere; reported only"}
-    min_adults:            {value: 2,    severity: error,   approved: false, source: "PROPOSAL: [S7] event leadership at least 2 people; [S28]"}
-    children_per_adult_max: {value: 5,   severity: error,   approved: false, source: "PROPOSAL: [S9] 2 leaders per рій of up to 10"}
-    group_size_max:        {value: 12,   severity: warning, approved: false, source: "PROPOSAL: [S9] рій 6–10 children + 2 adults"}
-    max_days:              {value: 2,    severity: error,   approved: false, source: "PROPOSAL: conservative, [S9] novatstvo camps are indoors, [S18] 2–3-day hikes from age 7"}
-    overnight_allowed_kinds: {value: [hut, campsite], severity: error, approved: false, source: "PROPOSAL: [S9] only indoors or on an organised campsite"}
-    pack_weight_max_kg:    {value: null, severity: warning, approved: false, source: "no Plast number for novatstvo"}
-    pack_weight_max_pct_body: {value: 10, severity: warning, approved: false, source: "PROPOSAL: [S35] comparison source only"}
+    km_per_day_max:        {value: 10,   severity: error,   approved: true, source: "PROPOSAL: derived (half of the youth mountain standard), no Plast source"}
+    walking_hours_per_day_max: {value: 5, severity: error,   approved: true, source: "PROPOSAL: [S33] German Alpine Club, up to 5 h walking for children 6+"}
+    ascent_per_day_max:    {value: null, severity: warning, approved: true, source: "no source found anywhere; reported only"}
+    min_adults:            {value: 2,    severity: error,   approved: true, source: "PROPOSAL: [S7] event leadership at least 2 people; [S28]"}
+    children_per_adult_max: {value: 5,   severity: error,   approved: true, source: "PROPOSAL: [S9] 2 leaders per рій of up to 10"}
+    group_size_max:        {value: 12,   severity: warning, approved: true, source: "PROPOSAL: [S9] рій 6–10 children + 2 adults"}
+    max_days:              {value: 2,    severity: error,   approved: true, source: "PROPOSAL: conservative, [S9] novatstvo camps are indoors, [S18] 2–3-day hikes from age 7"}
+    overnight_allowed_kinds: {value: [hut, campsite], severity: error, approved: true, source: "PROPOSAL: [S9] only indoors or on an organised campsite"}
+    pack_weight_max_kg:    {value: null, severity: warning, approved: true, source: "no Plast number for novatstvo"}
+    pack_weight_max_pct_body: {value: 10, severity: warning, approved: true, source: "PROPOSAL: [S35] comparison source only"}
 
   yunatstvo:
     label: "Юнацтво (11–18)"
-    km_per_day_max:        {value: 20,   severity: error,   approved: false, source: "PROPOSAL: [S5] mountain skill standard 20 km/day"}
-    km_per_day_warn:       {value: 15,   severity: warning, approved: false, source: "PROPOSAL: [S13] typical day 15 km in the Kulchytskyi handbook"}
-    walking_hours_per_day_max: {value: null, severity: warning, approved: false, source: "no source found; reported only"}
-    ascent_per_day_max:    {value: null, severity: warning, approved: false, source: "no source found anywhere; reported only"}
-    min_adults:            {value: 2,    severity: error,   approved: false, source: "[S2] a гурток hike needs at least two adult пластуни (UPYu camp guidelines 2021)"}
-    children_per_adult_max: {value: 8,   severity: error,   approved: false, source: "PROPOSAL: [S28] Plast Canada 1:8"}
-    group_size_max:        {value: 10,   severity: warning, approved: false, source: "PROPOSAL: [S14] team of 5–10 incl. adults"}
-    max_days:              {value: 7,    severity: error,   approved: false, source: "PROPOSAL: [S13] 7–8 days without resupply is the food-weight limit"}
-    overnight_allowed_kinds: {value: [hut, campsite, shelter, water, lake, start, finish], severity: error, approved: false, source: "PROPOSAL: anywhere except a peak; see ridge rule [S2]"}
-    pack_weight_max_kg:    {value: 9,    severity: warning, approved: false, source: "[S2] up to 9 kg per participant (gear-list recommendation)"}
-    pack_weight_max_pct_body: {value: 20, severity: warning, approved: false, source: "PROPOSAL: [S35] comparison source only"}
+    km_per_day_max:        {value: 20,   severity: error,   approved: true, source: "PROPOSAL: [S5] mountain skill standard 20 km/day"}
+    km_per_day_warn:       {value: 15,   severity: warning, approved: true, source: "PROPOSAL: [S13] typical day 15 km in the Kulchytskyi handbook"}
+    walking_hours_per_day_max: {value: null, severity: warning, approved: true, source: "no source found; reported only"}
+    ascent_per_day_max:    {value: null, severity: warning, approved: true, source: "no source found anywhere; reported only"}
+    min_adults:            {value: 2,    severity: error,   approved: true, source: "[S2] a гурток hike needs at least two adult пластуни (UPYu camp guidelines 2021)"}
+    children_per_adult_max: {value: 8,   severity: error,   approved: true, source: "PROPOSAL: [S28] Plast Canada 1:8"}
+    group_size_max:        {value: 10,   severity: warning, approved: true, source: "PROPOSAL: [S14] team of 5–10 incl. adults"}
+    max_days:              {value: 7,    severity: error,   approved: true, source: "PROPOSAL: [S13] 7–8 days without resupply is the food-weight limit"}
+    overnight_allowed_kinds: {value: [hut, campsite, shelter, water, lake, start, finish], severity: error, approved: true, source: "PROPOSAL: anywhere except a peak; see ridge rule [S2]"}
+    pack_weight_max_kg:    {value: 9,    severity: warning, approved: true, source: "[S2] up to 9 kg per participant (gear-list recommendation)"}
+    pack_weight_max_pct_body: {value: 20, severity: warning, approved: true, source: "PROPOSAL: [S35] comparison source only"}
 
   senior:
     label: "Старші / сеніори (18+)"
-    km_per_day_max:        {value: null, severity: error,   approved: false, source: "no hard limit proposed"}
-    km_per_day_warn:       {value: 20,   severity: warning, approved: false, source: "PROPOSAL: research §4, leader's decision above 20 km"}
-    walking_hours_per_day_max: {value: null, severity: warning, approved: false, source: "no source found; reported only"}
-    ascent_per_day_max:    {value: null, severity: warning, approved: false, source: "no source found anywhere; reported only"}
-    min_adults:            {value: 2,    severity: error,   approved: false, source: "PROPOSAL: never hike alone [S23]"}
-    children_per_adult_max: {value: null, severity: error,  approved: false, source: "not applicable"}
-    group_size_max:        {value: null, severity: warning, approved: false, source: "not applicable"}
-    max_days:              {value: 7,    severity: warning, approved: false, source: "PROPOSAL: [S13] longer only with a resupply plan"}
-    overnight_allowed_kinds: {value: [hut, campsite, shelter, water, lake, start, finish], severity: error, approved: false, source: "PROPOSAL: anywhere except a peak; see ridge rule [S2]"}
-    pack_weight_max_kg:    {value: null, severity: warning, approved: false, source: "no age-specific number"}
-    pack_weight_max_pct_body: {value: 20, severity: warning, approved: false, source: "PROPOSAL: [S35] comparison source only"}
+    km_per_day_max:        {value: null, severity: error,   approved: true, source: "no hard limit proposed"}
+    km_per_day_warn:       {value: 20,   severity: warning, approved: true, source: "PROPOSAL: research §4, leader's decision above 20 km"}
+    walking_hours_per_day_max: {value: null, severity: warning, approved: true, source: "no source found; reported only"}
+    ascent_per_day_max:    {value: null, severity: warning, approved: true, source: "no source found anywhere; reported only"}
+    min_adults:            {value: 2,    severity: error,   approved: true, source: "PROPOSAL: never hike alone [S23]"}
+    children_per_adult_max: {value: null, severity: error,  approved: true, source: "not applicable"}
+    group_size_max:        {value: null, severity: warning, approved: true, source: "not applicable"}
+    max_days:              {value: 7,    severity: warning, approved: true, source: "PROPOSAL: [S13] longer only with a resupply plan"}
+    overnight_allowed_kinds: {value: [hut, campsite, shelter, water, lake, start, finish], severity: error, approved: true, source: "PROPOSAL: anywhere except a peak; see ridge rule [S2]"}
+    pack_weight_max_kg:    {value: null, severity: warning, approved: true, source: "no age-specific number"}
+    pack_weight_max_pct_body: {value: 20, severity: warning, approved: true, source: "PROPOSAL: [S35] comparison source only"}
 
 # Rules that apply to every section.
 common:
-  overnight_water_radius_km: {value: 0.3, severity: warning, approved: false, source: "PROPOSAL: research §4 field 7, every overnight needs water nearby or water carried in the plan"}
-  ridge_overnight: {value: 30, severity: warning, approved: false, source: "[S2] do not camp on ridge crests or isolated tops. Check (profile heights): within 30 m of the highest point in ±1 km and the ground drops at least 30 m on both sides"}
-  arrive_hours_before_sunset: {value: 3, severity: warning, approved: false, source: "PROPOSAL: [S13] stop for the night 3–4 h before dusk"}
-  earliest_start: {value: "06:00", severity: warning, approved: false, source: "PROPOSAL: [S14] youth teams move only 06:00–21:00"}
-  default_start: {value: "08:00", severity: warning, approved: false, source: "planner assumption, not a norm"}
-  break_share: {value: 0.2, severity: warning, approved: false, source: "PROPOSAL: [S13] 10 min rest per 50 min walking = +20 % (research §7.3, own calculation)"}
+  overnight_water_radius_km: {value: 0.3, severity: warning, approved: true, source: "PROPOSAL: research §4 field 7, every overnight needs water nearby or water carried in the plan"}
+  ridge_overnight: {value: 30, severity: warning, approved: true, source: "[S2] do not camp on ridge crests or isolated tops. Check (profile heights): within 30 m of the highest point in ±1 km and the ground drops at least 30 m on both sides"}
+  arrive_hours_before_sunset: {value: 3, severity: warning, approved: true, source: "PROPOSAL: [S13] stop for the night 3–4 h before dusk"}
+  earliest_start: {value: "06:00", severity: warning, approved: true, source: "PROPOSAL: [S14] youth teams move only 06:00–21:00"}
+  default_start: {value: "08:00", severity: warning, approved: true, source: "planner assumption, not a norm"}
+  break_share: {value: 0.2, severity: warning, approved: true, source: "PROPOSAL: [S13] 10 min rest per 50 min walking = +20 % (research §7.3, own calculation)"}
 
 # Walking time estimate: Langmuir's group version of Naismith's rule (research §7.3).
 pace:
-  flat_km_per_hour: {value: 4.0, approved: false, source: "PROPOSAL: [S49] Langmuir group rule, 4 km/h"}
-  ascent_m_per_hour: {value: 450, approved: false, source: "PROPOSAL: [S49] Langmuir group rule, +1 h per 450 m of ascent"}
+  flat_km_per_hour: {value: 4.0, approved: true, source: "PROPOSAL: [S49] Langmuir group rule, 4 km/h"}
+  ascent_m_per_hour: {value: 450, approved: true, source: "PROPOSAL: [S49] Langmuir group rule, +1 h per 450 m of ascent"}
 
 # Weather thresholds (all sections). Values tie to the official hazard levels [S26].
 weather:
-  treeline_m: {value: 1400, approved: false, source: "PROPOSAL: approximate upper forest limit in the Ukrainian Carpathians (≈1300–1500 m); above it a day counts as exposed"}
+  treeline_m: {value: 1400, approved: true, source: "PROPOSAL: approximate upper forest limit in the Ukrainian Carpathians (≈1300–1500 m); above it a day counts as exposed"}
   thunderstorm_codes: {value: [95, 96, 99], approved: true, source: "WMO weather codes used by Open-Meteo: 95 thunderstorm, 96/99 with hail"}
-  wind_medium_ms: {value: 15, approved: false, source: "PROPOSAL: [S26] hazard level I starts at 15 m/s; go below the forest line"}
-  wind_high_ms: {value: 25, approved: false, source: "PROPOSAL: [S26] hazard level II starts at 25 m/s; do not go above the forest line"}
-  rain_medium_mm: {value: 15, approved: false, source: "PROPOSAL: [S26] level I (per 12 h, applied to the daily sum); no fords, no camp near streams"}
-  rain_high_mm: {value: 50, approved: false, source: "PROPOSAL: [S26] level II (per 12 h, applied to the daily sum); postpone the day"}
-  night_cold_c: {value: 0, approved: false, source: "PROPOSAL: research §4; at or below 0 °C winter sleeping gear is required [S18]"}
-  snow_codes: {value: [71, 73, 75, 77, 85, 86], approved: false, source: "PROPOSAL: WMO snow codes; snow on the route needs winter gear and experience [S18]; high risk above the tree line"}
+  wind_medium_ms: {value: 15, approved: true, source: "PROPOSAL: [S26] hazard level I starts at 15 m/s; go below the forest line"}
+  wind_high_ms: {value: 25, approved: true, source: "PROPOSAL: [S26] hazard level II starts at 25 m/s; do not go above the forest line"}
+  rain_medium_mm: {value: 15, approved: true, source: "PROPOSAL: [S26] level I (per 12 h, applied to the daily sum); no fords, no camp near streams"}
+  rain_high_mm: {value: 50, approved: true, source: "PROPOSAL: [S26] level II (per 12 h, applied to the daily sum); postpone the day"}
+  night_cold_c: {value: 0, approved: true, source: "PROPOSAL: research §4; at or below 0 °C winter sleeping gear is required [S18]"}
+  snow_codes: {value: [71, 73, 75, 77, 85, 86], approved: true, source: "PROPOSAL: WMO snow codes; snow on the route needs winter gear and experience [S18]; high risk above the tree line"}
 
 # Documents checklist added to every validated plan.
 documents:
@@ -99,50 +103,50 @@ documents:
 supplies:
   food_kg_per_person_day:
     value: {novatstvo: 0.72, yunatstvo: 0.9, senior: 0.9}
-    approved: false
+    approved: true
     source: "PROPOSAL: 0.9 kg dry food [S41] (upper bound of 800–900 g); novatstvo = 0.8 × 0.9 [S13]. Classic Plast menu is ≈1.1 kg [S13]"
   kcal_per_person_day:
     value: {novatstvo: 2100, yunatstvo: 2700, senior: 3000}
-    approved: false
+    approved: true
     source: "PROPOSAL: [S39] MOZ 2017 norms by age (novatstvo 7–10 y.: 2100; youth up to 2700); adults 3000 [S41]"
   water_l_per_walking_hour:
     value: 0.5
-    approved: false
+    approved: true
     source: "PROPOSAL: [S42][S43][S44] 0.5 l per hour of walking (1 l/h in heat)"
   water_l_camp_per_day:
     value: 1.0
-    approved: false
+    approved: true
     source: "PROPOSAL: 0.5 l per hot meal × 2 hot meals [S2][S41] (own calculation)"
   water_l_min_per_day:
     value: 3.0
-    approved: false
+    approved: true
     source: "PROPOSAL: [S41] lower bound 3–5 l per person per day"
   water_l_per_person_dry_night:
     value: 1.5
-    approved: false
+    approved: true
     source: "PROPOSAL: camp water 1.0 l + 0.5 l to drink in the evening/morning (own calculation from [S2][S41])"
   water_l_carried_at_start:
     value: 1.0
-    approved: false
+    approved: true
     source: "PROPOSAL: personal flask 1–1.5 l [S2]"
   gas_g_per_person_day:
     value: 25
-    approved: false
+    approved: true
     source: "PROPOSAL: [S46] stove maker guide, 25 g per person per day in summer"
   gas_cold_factor:
     value: 1.5
-    approved: false
+    approved: true
     source: "PROPOSAL: [S46][S51] +50 % with night frost; below −12 °C only propane mix or keep the canister warm"
   people_per_stove:
     value: 6
-    approved: false
+    approved: true
     source: "PROPOSAL: [S13] menu and pots planned per kitchen group of 6"
   pots_per_stove:
     value: 3
-    approved: false
+    approved: true
     source: "[S13] at least 3 pots of ≥3 l per group"
   people_per_first_aid_kit:
     value: 10
-    approved: false
+    approved: true
     source: "[S2] annex 1: group first-aid kit sized for 10 people"
 

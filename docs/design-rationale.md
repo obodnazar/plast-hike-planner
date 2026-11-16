@@ -97,7 +97,7 @@ Feedback actually changes behaviour. In the recorded demo run (14 Nov 2026), att
 | **The model chooses, tools compute** | Plans are expressed as waypoint ids; all km, metres and hours come from the server. No fabricated numbers can enter the plan. | Night spots are limited to OSM points of interest. |
 | **Date probes run in code** | After a HIGH result the agent calls the weather tool for the other allowed start dates (cheap, deterministic) and gives the facts to the model. Without this, the model sometimes kept the same date for all 4 attempts. | Extra MCP calls (milliseconds in replay, cached in live mode). |
 | **Errors vs empty results** | `isError` + JSON `{code, message, hint}` for failures; empty lists or `valid:false` for legitimate "no". The agent turns tool rejections (e.g. a wrong waypoint id) into feedback for the next proposal. | Two paths to handle on the client. |
-| **Rules as data with sources and approval status** | `data/rules.yaml` holds every threshold with its source and `approved: false`; every tool result carries `rules_status`, so a draft can never look official. Research with 51 sources is kept in the repo. | Until a Plast leader approves, the plan is explicitly a draft. |
+| **Rules as data with sources and approval status** | `data/rules.yaml` holds every threshold with its source and its approval (`approved`, `approved_by`, version); every tool result carries `rules_status`, so a draft can never look official. Research with 51 sources is kept in the repo. | The leader approved all 59 values for this project on 16 Nov 2026; before that every plan said «чернетка». Approval for the project is not adoption by Plast. |
 | **No invented numbers where no source exists** | Ascent per day is reported, not judged. There is no default for base gear weight: the leader enters a weighed rucksack, or the tool reports how much of the limit is left for gear. | Some checks are weaker until a leader decides the values. |
 | **Forecast at the route's highest point, 16-day fixture per route** | One call per route covers every start date and night spot; the night temperature at lower spots uses the standard 6.5 °C/km lapse rate. Replay works for any date in the recorded window. | One point per route; daily aggregates; replay uses forecasts from the recording date. |
 | **Dataset built offline from OSM + SRTM** | Reproducible (`scripts/build_dataset.py`, cached raw downloads), no network at runtime. Heights come from OpenTopoData (counts per request) instead of Open-Meteo's elevation API (counts per coordinate, which hit 429). | A snapshot: trail changes after 2026-11-14 are not seen until rebuilt. |
@@ -125,7 +125,7 @@ Feedback actually changes behaviour. In the recorded demo run (14 Nov 2026), att
 - A forecast is not certainty.
 
 **Rules**
-- DRAFT. Several values have no Plast source (km/day for новацтво, adult ratios, weather thresholds) and need a leader's decision; see `research/rules-for-approval.md`.
+- Approved for this project by its leader (16 Nov 2026), but several values have no Plast source (km/day for новацтво, adult ratios, weather thresholds): they are accepted proposals, marked `PROPOSAL` in their source. Questions only Plast can settle are open: `research/plast-norms-research.md`, section 5.
 - No check of protected areas, wartime restrictions or ДСНС registration; these appear as a documents checklist only.
 
 **Supplies**

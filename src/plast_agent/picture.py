@@ -60,7 +60,7 @@ def _day_verdict(day: int, validation: dict[str, Any]) -> tuple[str, str]:
         return f"✗ порушень норм: {errors}", VERY_STEEP
     if found:
         return f"⚠ попереджень: {len(found)} (див. нижче)", STEEP
-    return "✓ у межах норм (чернетка)", GENTLE
+    return "✓ у межах норм" + (" (чернетка)" if "DRAFT" in (validation.get("rules_status") or "") else ""), GENTLE
 
 
 def _distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

@@ -61,8 +61,8 @@ Typical flow:
    change dates, night spots or route, then validate again.
 4. calculate_supplies(day_loads from step 2 days[], dry_nights from step 2, night_min_c = coldest_night_c from step 3).
 5. Optional, to show the plan: get_route_profile(same route and night spots) -> per-day profile and landmarks.
-Never invent km, ascent or ids: take them from tool results. Rules are a DRAFT until a
-Plast leader approves them; always mention rules_status to the user.
+Never invent km, ascent or ids: take them from tool results. rules_status says whether a Plast
+leader approved the rules (or they are a DRAFT); always mention it to the user.
 """
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False)

@@ -42,6 +42,12 @@ VIOLATION_UA = {
 }
 
 
+def rules_note(status: str) -> str:
+    """«approved by Назар (version 2026-11-16)» -> «Норми затвердив Назар (версія 2026-11-16) для цього проєкту.»"""
+    m = re.match(r"approved by (.+?) \(version (.+)\)$", status or "")
+    return f"Норми затвердив {m.group(1)} (версія {m.group(2)}) для цього проєкту." if m else f"Норми: {status}."
+
+
 def num(v):
     return f"{v:g}" if isinstance(v, (int, float)) else v
 
@@ -113,8 +119,10 @@ def render_plan(state: dict[str, Any], request_path: str, model: str, generated_
     add("---")
     add(f"# План мандрівки: {request_path.split('/')[-1].removesuffix('.md')}\n")
     add(f"**{STATUS.get(status, status)}** · запит: [[{request_path.removesuffix('.md')}]]")
-    if v.get("rules_status"):
+    if "DRAFT" in (v.get("rules_status") or ""):
         add(f"\n> [!warning] Норми: {v['rules_status']}. Перевірте й затвердьте `data/rules.yaml`.")
+    elif v.get("rules_status"):
+        add(f"\n> [!note] {rules_note(v['rules_status'])}")
     add(f"\n## Висновок\n{clean(state.get('conclusion'), 1500)}\n")
     if r:
         add("## Що агент зрозумів із запиту")
@@ -161,7 +169,8 @@ def render_plan(state: dict[str, Any], request_path: str, model: str, generated_
         if errors and state.get("status") == "group":
             add("\n**Супровід (порада):**")
             for x in errors:
-                add(f"- {violation_ua(x)} За можливості візьміть ще когось на супровід (норми — чернетка).")
+                add(f"- {violation_ua(x)} За можливості візьміть ще когось на супровід"
+                    + (" (норми — чернетка)." if "DRAFT" in (v.get("rules_status") or "") else "."))
         elif errors:
             add("\n**Порушення (план не валідний):**")
             for x in errors:

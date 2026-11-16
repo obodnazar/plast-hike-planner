@@ -199,7 +199,7 @@ Never committed (all in `.gitignore`): `.env`, `certs/`, `demo-vault/.obsidian/`
 src/plast_trail/   custom MCP server: server.py (tools), routes.py, validation.py, weather.py, supplies.py, models.py, data.py, errors.py
 src/plast_agent/   agent: cli.py, workflow.py (LangGraph), llm.py, mcp_links.py (MCP client), render.py, picture.py (route SVG), config.py, chat.py, evaluation.py, check_obsidian.py, plan_store.py (saved plans)
 src/plast_web/     chat and plan pages: app.py (local web server), conversation.py (the chat), runtime.py (MCP supervisors, plast-trail process), view.py (the boundary to human text), static/ (page, styles, script)
-data/              routes.json (121 routes) · places.json (1494 named places) · rules.yaml (DRAFT norms with sources)
+data/              routes.json (121 routes) · places.json (1494 named places) · rules.yaml (norms with sources, approved for the project 16.11.2026)
 fixtures/          recorded Open-Meteo responses (replay)
 scripts/           build_dataset, build_places, record_weather, smoke_server, smoke_model, gen_docs, reset_demo, eval_parsing, offline_check
 tests/             pytest
