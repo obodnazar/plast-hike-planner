@@ -15,7 +15,7 @@ Discovered tools: `find_routes`, `resolve_places`, `validate_hike_plan`, `assess
 | Situation | What the caller gets |
 |---|---|
 | Domain failure (unknown route, missing fixture, …) | `isError: true`; text = `Error executing tool <name>: ` (prefix added by FastMCP) + `{"error": {"code": "...", "message": "...", "hint": "..."}}`. The hint says what the caller (model) should do next |
-| Arguments violate the input schema (wrong type, out of range, bad pattern, unknown argument or unknown field inside `group_limits`) | `isError: true`; the same JSON shape with code `INVALID_INPUT` and the failing fields in the message; the tool body never runs. Every input schema has `additionalProperties: false`; only the items of `calculate_supplies.day_loads` accept extra fields, so `validate_hike_plan` `days[]` can be passed as they are |
+| Arguments violate the input schema (wrong type, out of range, bad pattern, unknown argument or unknown field inside `group_limits`) | `isError: true`; the same JSON shape with code `INVALID_INPUT` and the failing fields in the message; the tool body never runs. Every input and output schema, nested objects included, has `additionalProperties: false` (pass `day_loads` items with `km`, `ascent_m` and `walking_hours` only) |
 | Unexpected bug | `isError: true`; code `INTERNAL_ERROR`; stack trace only in the server log |
 | Valid request, nothing found / plan breaks rules | **success** with an empty list (`routes: []`) or `valid: false` + `violations` |
 
@@ -100,7 +100,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 
 | Condition | Representation |
 |---|---|
-| Arguments break the schema (days=0, unknown section/region/feature, more than 4 features) | `isError: true`, text = pydantic validation message from FastMCP; the tool body does not run |
+| Arguments break the schema (days=0, unknown section/region/feature, more than 4 features) | `isError: true`, code `INVALID_INPUT` with the failing fields; the tool body does not run |
 | Dataset file missing or corrupt | `isError: true`, `{"error": {"code": "DATA_UNAVAILABLE", ...}}` |
 | Nothing matches | **not an error**: `routes: []`, `excluded` gives counts per reason, `notes` suggests what to relax |
 
@@ -287,7 +287,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 
 | Condition | Representation |
 |---|---|
-| Empty list, more than 5 names, a name shorter than 2 or longer than 60 characters, unknown region | `isError: true`, pydantic validation message from FastMCP; the tool body does not run |
+| Empty list, more than 5 names, a name shorter than 2 or longer than 60 characters, unknown region | `isError: true`, code `INVALID_INPUT` with the failing fields; the tool body does not run |
 | Gazetteer file missing | `isError: true`, code `DATA_UNAVAILABLE`, hint: run `scripts/build_places.py` |
 | A name not in the dataset | **not an error**: `status: "not_found"`, `best: null` |
 
@@ -502,8 +502,8 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 | Unknown route id | `isError: true`, code `ROUTE_NOT_FOUND`, hint shows the id format |
 | Waypoint id not on the route | code `WAYPOINT_NOT_FOUND`, hint gives the valid range w0..wN |
 | Night spots out of km order, or start/finish used as a night spot | code `WAYPOINT_ORDER` |
-| Bad `start_time` | code `INVALID_INPUT` (fails the schema pattern `^\d{2}:\d{2}$`, or a time such as 24:99) |
-| Schema violations (participants=0, >6 night spots, id not matching `^r\d+$`/`^w\d+$`) | `isError: true`, pydantic validation message |
+| Bad `start_time` | code `INVALID_INPUT` (fails the schema pattern `^([01]\d\|2[0-3]):[0-5]\d$`, e.g. 24:99 or 8:00) |
+| Schema violations (participants=0, >6 night spots, id not matching `^r\d+$`/`^w\d+$`) | `isError: true`, code `INVALID_INPUT` with the failing fields |
 | Plan breaks rules | **not an error**: `valid: false` with `violations[]` (severity error/warning) |
 
 **Example input**
@@ -723,7 +723,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 |---|---|
 | Unknown route id | `isError: true`, code `ROUTE_NOT_FOUND` |
 | Night spot not on the route, out of order, or the start/finish | codes `WAYPOINT_NOT_FOUND` / `WAYPOINT_ORDER`, as in validate_hike_plan |
-| Schema violations (id not matching `^r\d+$`/`^w\d+$`, more than 6 night spots) | `isError: true`, pydantic validation message |
+| Schema violations (id not matching `^r\d+$`/`^w\d+$`, more than 6 night spots) | `isError: true`, code `INVALID_INPUT` with the failing fields |
 
 **Example input**
 
@@ -1098,7 +1098,7 @@ Codes: `ROUTE_NOT_FOUND`, `WAYPOINT_NOT_FOUND`, `WAYPOINT_ORDER`, `INVALID_INPUT
 
 | Condition | Representation |
 |---|---|
-| Schema violations (empty `day_loads`, >7 days, km > 40, tent_capacity not 2/3/4) | `isError: true`, pydantic message |
+| Schema violations (empty `day_loads`, >7 days, km > 40, tent_capacity not 2/3/4) | `isError: true`, code `INVALID_INPUT` with the failing fields |
 | `dry_nights` larger than the number of nights | code `INVALID_INPUT` |
 | A coefficient missing in rules.yaml | code `DATA_UNAVAILABLE`, names the missing key |
 

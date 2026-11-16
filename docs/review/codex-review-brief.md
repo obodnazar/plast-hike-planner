@@ -204,7 +204,7 @@ uv run plast-trail --port 8799
 PLAST_TRAIL_URL=http://127.0.0.1:8799/mcp uv run python scripts/smoke_server.py
 uv run plast-web --port 8790 --no-browser
 ```
-- `uv run pytest -q`: очікується 154 passed, без мережі.
+- `uv run pytest -q`: очікується 175 passed (або більше), без мережі.
 - `uv run plast-trail --port 8799`: окремий процес, `WEATHER_MODE=replay` за замовчуванням.
 - `smoke_server.py` (у другому терміналі): усі 6 інструментів, помилки, порожній результат.
 - `uv run plast-web`: без `.env` чат вимкнений, сторінки планів працюють.

@@ -7,7 +7,7 @@
 | Hiking routes, springs, huts, shelters, campsites, peaks, lakes, settlements | OpenStreetMap via the Overpass API | ODbL 1.0, © OpenStreetMap contributors | built once into `data/routes.json` | no |
 | Heights of route points | SRTM 30 m (NASA) via the OpenTopoData public API | public domain | built once into `data/routes.json` | no |
 | Weather forecast | Open-Meteo forecast API | CC BY 4.0 | `assess_weather_risk` | only in `live` mode (and when recording fixtures) |
-| Plast norms and coefficients | 51 public sources (Plast documents, state norms, outdoor guidance), see [research/plast-norms-research.md](../research/plast-norms-research.md) | n/a | `data/rules.yaml` (DRAFT, every value with its source) | no |
+| Plast norms and coefficients | 51 public sources (Plast documents, state norms, outdoor guidance), see [research/plast-norms-research.md](../research/plast-norms-research.md) | n/a | `data/rules.yaml` (approved for the project on 16.11.2026, every value with its source) | no |
 
 ## The route dataset
 
