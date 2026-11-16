@@ -251,7 +251,7 @@ def validate_hike_plan(route_id: str, section: str, participants: int, adults: i
                     budget_h = (sunset_min - margin_h * 60 - earliest) / 60
                     hint = (f"Even a {fmt_hhmm(earliest)} start is too late; shorten the day to about "
                             f"{budget_h:.1f} h. " + better_stop(a["km"], round(s["km"] * budget_h / s["elapsed"], 1), last))
-                add("ARRIVAL_AFTER_SAFE_TIME", "warning", i,
+                add("ARRIVAL_AFTER_SAFE_TIME", common_rule("arrive_hours_before_sunset")["severity"], i,
                     f"Arrival {fmt_hhmm(arrive)} is less than {margin_h} h before sunset {sunset}.",
                     fmt_hhmm(sunset_min - margin_h * 60), fmt_hhmm(arrive),
                     common_rule("arrive_hours_before_sunset")["source"], hint)
@@ -259,7 +259,7 @@ def validate_hike_plan(route_id: str, section: str, participants: int, adults: i
             add("KM_PER_DAY_MAX", km_sev, i, f"Day {i} is {s['km']} km, limit {km_max:g} km.",
                 km_max, s["km"], km_src, better_stop(a["km"], km_max, last))
         elif km_warn["value"] and s["km"] > km_warn["value"]:
-            add("KM_PER_DAY_WARN", "warning", i, f"Day {i} is {s['km']} km, above the comfortable {km_warn['value']} km.",
+            add("KM_PER_DAY_WARN", km_warn.get("severity", "warning"), i, f"Day {i} is {s['km']} km, above the comfortable {km_warn['value']} km.",
                 km_warn["value"], s["km"], km_warn["source"], better_stop(a["km"], km_warn["value"], last))
         if up_max is not None and s["ascent"] > up_max:
             add("ASCENT_PER_DAY_MAX", up_sev, i, f"Day {i} climbs {s['ascent']} m, limit {up_max:g} m.",
@@ -291,13 +291,13 @@ def validate_hike_plan(route_id: str, section: str, participants: int, adults: i
                     "Pick a lower night spot from find_routes overnight_options.")
             if ridge:
                 lower = [o for o in options if abs(o.km - w["km"]) <= 2 and o.elevation_m < w["elevation_m"] - 50]
-                add("RIDGE_OVERNIGHT", "warning", i, f"Night {i} ({w['id']}) looks like a ridge or top.",
+                add("RIDGE_OVERNIGHT", common_rule("ridge_overnight")["severity"], i, f"Night {i} ({w['id']}) looks like a ridge or top.",
                     "not within 30 m of the local high point", w["elevation_m"], common_rule("ridge_overnight")["source"],
                     (f"Lower spot nearby: {lower[0].id} ({lower[0].kind}, {lower[0].elevation_m} m)." if lower
                      else "No lower allowed spot within 2 km."))
             if water is None:
                 wet = [o for o in options if o.water_nearby and abs(o.km - w["km"]) <= 3]
-                add("OVERNIGHT_NO_WATER", "warning", i, f"No water within 300 m of night {i} ({w['id']}).",
+                add("OVERNIGHT_NO_WATER", common_rule("overnight_water_radius_km")["severity"], i, f"No water within 300 m of night {i} ({w['id']}).",
                     "water within 300 m", "none", common_rule("overnight_water_radius_km")["source"],
                     (f"Move the night to {wet[0].id} (km {wet[0].km}), or carry water (calculate_supplies dry_nights)."
                      if wet else "Carry water for the evening and morning (pass dry_nights to calculate_supplies)."))
@@ -334,7 +334,7 @@ def validate_hike_plan(route_id: str, section: str, participants: int, adults: i
             f"Group of {participants + adults}, recommended at most {rule['value']}.",
             rule["value"], participants + adults, rule["source"], "Split into two groups, each with its own adults.")
     if start_min < parse_hhmm(common_rule("earliest_start")["value"]):
-        add("START_TOO_EARLY", "warning", None, f"Start at {fmt_hhmm(start_min)} is before the earliest allowed.",
+        add("START_TOO_EARLY", common_rule("earliest_start")["severity"], None, f"Start at {fmt_hhmm(start_min)} is before the earliest allowed.",
             common_rule("earliest_start")["value"], fmt_hhmm(start_min), common_rule("earliest_start")["source"])
 
     # ---- the end of the route: routes are planned one way, so some end on a summit or a ridge

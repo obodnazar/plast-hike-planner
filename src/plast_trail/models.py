@@ -25,8 +25,8 @@ TriggerUnit = Literal["wmo_code", "m/s", "mm", "°C"]
 class Section(str, Enum):
     """Plast age section of the group."""
 
-    novatstvo = "novatstvo"  # новацтво, 6-11
-    yunatstvo = "yunatstvo"  # юнацтво, 11-18
+    novatstvo = "novatstvo"  # новацтво, 6-10
+    yunatstvo = "yunatstvo"  # юнацтво, 11-17
     senior = "senior"        # старші пластуни / сеніори, 18+
 
 

@@ -19,7 +19,7 @@ approved_on: "2026-11-16"
 
 sections:
   novatstvo:
-    label: "Новацтво (6–11)"
+    label: "Новацтво (6–10)"
     km_per_day_max:        {value: 10,   severity: error,   approved: true, source: "PROPOSAL: derived (half of the youth mountain standard), no Plast source"}
     walking_hours_per_day_max: {value: 5, severity: error,   approved: true, source: "PROPOSAL: [S33] German Alpine Club, up to 5 h walking for children 6+"}
     ascent_per_day_max:    {value: null, severity: warning, approved: true, source: "no source found anywhere; reported only"}
@@ -32,7 +32,7 @@ sections:
     pack_weight_max_pct_body: {value: 10, severity: warning, approved: true, source: "PROPOSAL: [S35] comparison source only"}
 
   yunatstvo:
-    label: "Юнацтво (11–18)"
+    label: "Юнацтво (11–17)"
     km_per_day_max:        {value: 20,   severity: error,   approved: true, source: "PROPOSAL: [S5] mountain skill standard 20 km/day"}
     km_per_day_warn:       {value: 15,   severity: warning, approved: true, source: "PROPOSAL: [S13] typical day 15 km in the Kulchytskyi handbook"}
     walking_hours_per_day_max: {value: null, severity: warning, approved: true, source: "no source found; reported only"}
@@ -98,7 +98,7 @@ documents:
     - "Письмові дозволи батьків [S1][S3]"
     - "Комендант — дійсний член Пласту 18+ [S2][S3]"
 
-# Supply coefficients for calculate_supplies (research §7.3). All PROPOSALS, pending approval.
+# Supply coefficients for calculate_supplies (research §7.3). Proposals from the research, approved for the project on 16.11.2026.
 # There is deliberately NO default for base gear weight: no source exists, so the leader enters a measured one.
 supplies:
   food_kg_per_person_day:

@@ -179,6 +179,16 @@ def test_cold_night_raises_gas_and_adds_gear():
     assert s.water_to_carry_for_dry_nights_l == pytest.approx(12 * 1.5)
 
 
+def test_water_for_every_dry_night_is_in_the_pack():
+    """Codex P2: two dry nights in a row, but the pack weight counted water for one."""
+    one = calculate_supplies("yunatstvo", 10, 2, _days(), 1, None, 3, None, None, None)
+    two = calculate_supplies("yunatstvo", 10, 2, _days(), 2, None, 3, None, None, None)
+    assert one.pack_participant.water_kg == pytest.approx(1.0 + 1.5)
+    assert two.pack_participant.water_kg == pytest.approx(1.0 + 2 * 1.5)
+    assert two.water_to_carry_for_dry_nights_l == pytest.approx(2 * 12 * 1.5)
+    assert any("всі ці ночівлі" in w for w in two.warnings)
+
+
 def test_pack_check_uses_measured_gear_only():
     no_gear = calculate_supplies("yunatstvo", 10, 2, _days(), 0, None, 3, None, None, None)
     assert no_gear.pack_participant.within_limit is None           # no invented base weight
@@ -315,3 +325,17 @@ def test_a_plan_that_ends_on_a_summit_is_warned():
     assert v.valid                                   # a warning, the plan stays valid
     v = validate_hike_plan(ROUTE, "yunatstvo", 10, 2, ["w30", "w56"], None, None, None)
     assert "ENDS_ON_TOP" not in [x.code for x in v.violations]   # ends in Ясіня, a village
+
+
+def test_common_rule_severity_comes_from_the_rules_file(monkeypatch):
+    """Codex P3: changing arrive_hours_before_sunset to severity: error in rules.yaml had no effect."""
+    import copy
+    from plast_trail import data, validation
+    rules = copy.deepcopy(data.load_rules())
+    rules["common"]["arrive_hours_before_sunset"]["severity"] = "error"
+    monkeypatch.setattr(data, "load_rules", lambda: rules)
+    monkeypatch.setattr(validation, "load_rules", lambda: rules, raising=False)
+    from datetime import date
+    v = validation.validate_hike_plan("r8613349", "yunatstvo", 10, 2, ["w30", "w56"], date(2026, 11, 23), None, None)
+    late = [x for x in v.violations if x.code == "ARRIVAL_AFTER_SAFE_TIME"]
+    assert late and all(x.severity == "error" for x in late) and not v.valid

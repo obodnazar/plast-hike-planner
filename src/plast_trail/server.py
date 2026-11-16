@@ -6,11 +6,14 @@ Start it on its own, in a separate terminal:
     uv run plast-trail --port 8771     # another port
     WEATHER_MODE=live uv run plast-trail
 
-Tools (all return structured JSON with an output schema):
+Six tools, each with an input and an output schema; unknown arguments are refused:
     find_routes          - routes that fit the group (OSM dataset)
+    resolve_places       - place names as people write them -> gazetteer places (misspellings, case forms)
     validate_hike_plan   - per-day numbers + rule check with fix suggestions
-    assess_weather_risk  - Open-Meteo forecast -> risk per day (live / record / replay)
+    assess_weather_risk  - Open-Meteo forecast -> risk per day (WEATHER_MODE live or replay)
     calculate_supplies   - food, water, gas, tents, pack weight
+    get_route_profile    - the chosen route split into days: heights, steep parts, landmarks
+Recording forecasts for replay is a separate script: uv run python scripts/record_weather.py
 """
 
 from __future__ import annotations
@@ -26,13 +29,14 @@ from typing import Annotated, Literal
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
 from mcp.types import ToolAnnotations
-from pydantic import Field
+from pydantic import ConfigDict, Field, ValidationError
 
 from plast_trail import places as gazetteer
 from plast_trail import profile, routes, supplies, validation, weather
 from plast_trail.data import PROJECT_ROOT, dataset_meta, load_routes, rules_status
-from plast_trail.errors import DomainError
+from plast_trail.errors import INVALID_INPUT, DomainError
 from plast_trail.models import (
     DayLoad,
     Feature,
@@ -108,7 +112,7 @@ mcp = FastMCP("plast-trail", instructions=INSTRUCTIONS)
 )
 @logged
 def find_routes(
-    section: Annotated[Section, Field(description="Plast age section: novatstvo (6-11), yunatstvo (11-18), senior (18+)")],
+    section: Annotated[Section, Field(description="Plast age section: novatstvo (6-10), yunatstvo (11-17), senior (18+)")],
     days: Annotated[int, Field(ge=1, le=7, description="Number of hiking days (nights = days - 1)")],
     region: Annotated[Region | None, Field(description="Mountain area; omit to search all")] = None,
     must_include: Annotated[list[Feature], Field(max_length=4, description="Features the route must pass, e.g. ['lake']")] = [],  # noqa: B006
@@ -126,10 +130,11 @@ def find_routes(
         "Look up peaks, lakes, villages, polonyny or huts by the names people write, including misspellings and "
         "case forms ('піпівана' -> 'Піп Іван Чорногірський', 'Говерлу' -> 'Говерла'), in a gazetteer of ~1500 "
         "named places from OpenStreetMap. For each name: status found / corrected / ambiguous / not_found, the "
-        "best place with its kind, region and height, how many routes of the dataset pass it (on_routes = 0: "
-        "find_routes cannot use it), and alternatives. Use it before find_routes when a request names places: "
-        "pass best.name on to find_routes(places=...), ask the user when the status is ambiguous, and take the "
-        "region from the places if the request gives none. not_found is a normal result, not an error. "
+        "best place with its kind, region and height, how many routes of the dataset pass it (on_routes = 0: no route "
+        "passes it, find_routes then ranks routes by their distance to it), and alternatives. Use it before "
+        "find_routes when a request names places: pass best.name on to find_routes(places=...); when the status is "
+        "ambiguous, ask the user or take best and tell the user which place was taken; take the region from the "
+        "places if the request gives none. not_found is a normal result, not an error. "
         "Not a route search and not a geocoder outside the Ukrainian Carpathians."
     ),
     annotations=READ_ONLY,
@@ -247,6 +252,42 @@ def get_route_profile(
         max_length=6, description="Night spots in route order, as validated; [] for a one-day hike")] = [],  # noqa: B006
 ) -> RouteProfileResult:
     return profile.route_profile(route_id, overnight_waypoint_ids)
+
+
+class StrictArguments(FuncMetadata):
+    """FastMCP's argument check, made strict for this server: an unknown argument is refused (a typo such as
+    `max_km_per_dayy` must not pass silently), and a schema failure gets the same
+    {"error": {"code", "message", "hint"}} shape as every other failure of these tools."""
+
+    async def call_fn_with_arg_validation(self, fn, fn_is_async, arguments_to_validate, arguments_to_pass_directly):
+        try:
+            self.arg_model.model_validate(self.pre_parse_json(arguments_to_validate))
+        except ValidationError as exc:
+            problems = "; ".join(f"{'.'.join(str(x) for x in e['loc']) or 'arguments'}: {e['msg']}" for e in exc.errors())
+            raise DomainError(INVALID_INPUT, f"Invalid arguments: {problems}.",
+                              "Send only the fields of this tool's input schema (tools/list), "
+                              "with values inside their bounds.").to_tool_error() from exc
+        return await super().call_fn_with_arg_validation(fn, fn_is_async, arguments_to_validate,
+                                                         arguments_to_pass_directly)
+
+
+def make_arguments_strict(server: FastMCP) -> None:
+    """Every tool of the server: extra="forbid" on its arguments (also visible in tools/list as
+    additionalProperties: false) and the strict check above. Nested day_loads stay lenient on purpose:
+    validate_hike_plan's days[] can be passed as they are."""
+    for tool in server._tool_manager.list_tools():   # FastMCP has no public hook for this
+        base = tool.fn_metadata.arg_model
+
+        class Strict(base):  # type: ignore[valid-type, misc]
+            model_config = ConfigDict(**{**base.model_config, "extra": "forbid"})
+        Strict.__name__ = base.__name__
+        meta = tool.fn_metadata
+        tool.fn_metadata = StrictArguments(arg_model=Strict, output_schema=meta.output_schema,
+                                           output_model=meta.output_model, wrap_output=meta.wrap_output)
+        tool.parameters = Strict.model_json_schema(by_alias=True)
+
+
+make_arguments_strict(mcp)
 
 
 def main() -> None:

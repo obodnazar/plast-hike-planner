@@ -62,9 +62,9 @@ def calculate_supplies(section: str, participants: int, adults: int, days: list[
     kits = math.ceil(people / coef("people_per_first_aid_kit"))
     tents = math.ceil(people / tent_capacity)
 
-    # Heaviest moment: all the food at the start, the flask, and (if any night is dry) the extra water
-    # filled at the last source before that night.
-    carried_water = round(start_water + (per_dry_night if dry_nights else 0.0), 1)
+    # Heaviest moment: all the food at the start, the flask, and the water for the dry nights. The tool does not
+    # know whether there is a source between two dry nights, so it takes the safe case: none, all of it carried.
+    carried_water = round(start_water + per_dry_night * dry_nights, 1)
 
     def pack(rule_section: str, food_per_day: float, base: float | None, body_kg: float | None) -> PackEstimate:
         food = round(n_days * food_per_day, 1)
@@ -102,7 +102,9 @@ def calculate_supplies(section: str, participants: int, adults: int, days: list[
                         "наплічник без їжі й води і передайте participant_base_gear_kg.")
     if dry_nights:
         warnings.append(f"Ночівель без води поруч: {dry_nights}. Групі треба нести додатково {water_dry} л "
-                        f"({per_dry_night:g} л на людину на ночівлю); це враховано у вазі наплічника.")
+                        f"({per_dry_night:g} л на людину на ночівлю). У вазі наплічника враховано воду на "
+                        + ("всі ці ночівлі одразу (якщо між ними є джерело, нести треба менше)."
+                           if dry_nights > 1 else "цю ночівлю."))
 
     additions = [f"{pots} казанки ≥3 л, групова ємність для води 5–6 л [S2][S13]"]
     if cold:
@@ -110,7 +112,7 @@ def calculate_supplies(section: str, participants: int, adults: int, days: list[
                       "Запасні рукавиці, шапка, термобілизна",
                       f"Газу ×{gas_factor:g} (холод); нижче −12 °C лише пропан-бутанова суміш або балон у теплі"]
     if dry_nights:
-        additions.append(f"Ємності для води на {round(per_dry_night + start_water, 1)} л на людину")
+        additions.append(f"Ємності для води на {round(per_dry_night * dry_nights + start_water, 1)} л на людину")
     if any(d.walking_hours > 6 for d in days):
         additions.append("Налобні ліхтарі з запасними батареями: довгий ходовий день")
 
