@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Стежка — плани мандрівок</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"
+      integrity="sha512-h9FcoyWjHcOcmEVkxOfTLnmZFWIH0iZhZT1H2TbOq55xssQGEJHEaIm+PgoUaZbRvQTNTluNOEfb1ZRy6D3BOw=="
+      crossorigin="anonymous" referrerpolicy="no-referrer">
+<link rel="stylesheet" href="/static/app.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"
+        integrity="sha512-puJW3E/qXDqYp9IfhAI54BJEaWIfloJ7JWs7OeD5i6ruC9JZL1gERT1wjtwXFlh7CjE7ZJ+/vcRZRkIYIb6p4g=="
+        crossorigin="anonymous" referrerpolicy="no-referrer" defer></script>
+<script src="/static/app.js" type="module"></script>
+</head>
+<body>
+<a class="skip" href="#app">До змісту</a>
+<header class="top">
+  <a class="logo" href="/" data-nav>
+    <span class="mark" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M2 20 9 8l4 6 3-4 6 10H2Z" fill="#fff" opacity=".95"/><circle cx="17" cy="5" r="2" fill="#fde68a"/></svg></span>
+    <span>Стежка<small>плани пластових мандрівок</small></span>
+  </a>
+  <span class="spacer"></span>
+  <button class="iconbtn" id="theme" type="button" aria-label="Світла або темна тема" title="Світла / темна тема">◐</button>
+</header>
+<main id="app" tabindex="-1"><p class="loading">Завантажую…</p></main>
+<div class="sr-only" id="live" aria-live="polite"></div>
+</body>
+</html>

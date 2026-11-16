@@ -25,6 +25,7 @@ from plast_agent import llm as llm_mod
 from plast_agent.llm import LLM, LLMError
 from plast_agent.mcp_links import ConnectionFailure, McpCallError, McpLinks, _leaves, explain_connection
 from plast_agent.picture import route_gpx, route_svg
+from plast_agent.plan_store import plan_record, save_plan
 from plast_agent.render import render_plan
 from plast_agent.workflow import AgentStop, build_graph, now_kyiv
 
@@ -115,6 +116,10 @@ async def plan_and_write(links: McpLinks, settings, request_path: str | None, dr
                         "gpx_path": gpx_path, "leaflet": leaflet,
                         "leaflet_id": "plast-" + hashlib.sha1(request_path.encode()).hexdigest()[:10]},
                        request_path, llm.model_name, now_kyiv())
+    record = plan_record(state, request_path, llm.model_name, now_kyiv(),
+                         model_switches=getattr(llm, "switches", []), trace=getattr(links, "trace", []),
+                         obsidian_plan="" if dry_run else plan_path)
+    saved = save_plan(record)   # for the web page; saved before Obsidian, so a failed write loses nothing
     print(f"\n{BOLD}━━ 9. Записую план в Obsidian: {plan_path}{RESET}")
     if dry_run:
         print("  (dry run: нічого не записано)")
@@ -140,6 +145,7 @@ async def plan_and_write(links: McpLinks, settings, request_path: str | None, dr
             backup.parent.mkdir(exist_ok=True)
             backup.write_text(note, encoding="utf-8")
             print(f"  {RED}✗ Obsidian недоступний при записі ({exc}).{RESET}\n  План збережено локально: {backup}")
+            save_plan({**record, "obsidian_plan": ""})
             return 1
 
     colour = {"ok": GREEN, "attention": YELLOW, "risky": YELLOW, "group": YELLOW}.get(state.get("status"), RED)
@@ -148,6 +154,7 @@ async def plan_and_write(links: McpLinks, settings, request_path: str | None, dr
           f"виклики MCP: {links.calls} · "
           + (f"діалог {planning_started - started:.0f} с, планування {time.monotonic() - planning_started:.0f} с"
              if chat_mode else f"{time.monotonic() - started:.0f} с"))
+    print(f"  Сторінка плану у браузері: uv run plast-web → /plan/{record['id']} (файл {saved.name})")
     return 0 if state.get("status") in ("ok", "attention", "risky", "group") else 1
 
 

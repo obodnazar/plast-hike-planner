@@ -136,6 +136,22 @@ uv run plast-agent --chat --local
 Model calls have hard deadlines (120 s for parsing and proposals, 45 s for the closing paragraph). OpenRouter keeps slow free-model connections alive, so an HTTP read timeout alone may never fire. If the closing paragraph times out, the agent writes a factual summary instead.
 The server can also be inspected with any MCP client, e.g. `npx @modelcontextprotocol/inspector` → Streamable HTTP → `http://127.0.0.1:8770/mcp`.
 
+## Plan pages in the browser (optional)
+After every run the agent also saves the plan as `out/plans/<id>.json` (not in git) and prints its address.
+```bash
+uv run plast-web                  # http://127.0.0.1:8780, opens the browser
+```
+The page shows the plan from that file: a topographic map with the days in colour, an elevation profile linked to
+the map (hover, or focus it and use the arrow keys), each day against daylight, weather, safety, supplies and
+document checklists, other routes, and «Як агент дійшов до цього плану» with the MCP calls behind a switch. It needs
+no model, no Obsidian and no MCP server; the map tiles and Leaflet need internet (without it the route picture is
+shown instead).
+
+Everything on the page passes one boundary, `plast_web/view.py: present()`: the agent's ids (`r8613349`, `w30`),
+codes (`ENDS_ON_TOP`), source tags and English tool messages become Ukrainian text there, and a model conclusion
+that contains any of them is replaced by one written from the tool results. The server listens on 127.0.0.1 only,
+refuses other `Host`/`Origin` headers and sends a strict Content-Security-Policy; the page inserts data only as text.
+
 ## Offline / replay mode
 Weather is the only network call at runtime. In `replay` mode, the server reads genuine Open-Meteo responses recorded in `fixtures/open-meteo/` (one per route, 16 days) and passes them through the same parser and scoring as a live response.
 
@@ -147,7 +163,8 @@ Details and rate limits: [docs/data-and-replay.md](docs/data-and-replay.md).
 
 ## Checks
 ```bash
-uv run pytest -q                          # 129 tests: domain logic, schemas over in-memory MCP, the agent, request understanding, the evaluation, portability (no network)
+uv run pytest -q                          # 143 tests: domain logic, schemas over in-memory MCP, the agent, request understanding, the evaluation, portability, the plan pages (no network)
+uv run plast-web                          # saved plans in the browser (see above)
 uv run python scripts/smoke_server.py     # all 6 tools over real MCP, incl. error cases and an empty result
 uv run check-obsidian                     # Obsidian discovery + one vault_read
 uv run python scripts/reset_demo.py       # clean the demo vault before a rehearsal (plans, pictures, tracks)
@@ -170,7 +187,8 @@ Never committed (all in `.gitignore`): `.env`, `certs/`, `demo-vault/.obsidian/`
 ## Layout
 ```
 src/plast_trail/   custom MCP server: server.py (tools), routes.py, validation.py, weather.py, supplies.py, models.py, data.py, errors.py
-src/plast_agent/   agent: cli.py, workflow.py (LangGraph), llm.py, mcp_links.py (MCP client), render.py, picture.py (route SVG), config.py, chat.py, evaluation.py, check_obsidian.py
+src/plast_agent/   agent: cli.py, workflow.py (LangGraph), llm.py, mcp_links.py (MCP client), render.py, picture.py (route SVG), config.py, chat.py, evaluation.py, check_obsidian.py, plan_store.py (saved plans)
+src/plast_web/     plan pages: app.py (local web server), view.py (the boundary to human text), static/ (page, styles, script)
 data/              routes.json (121 routes) · places.json (1494 named places) · rules.yaml (DRAFT norms with sources)
 fixtures/          recorded Open-Meteo responses (replay)
 scripts/           build_dataset, build_places, record_weather, smoke_server, smoke_model, gen_docs, reset_demo, eval_parsing, offline_check

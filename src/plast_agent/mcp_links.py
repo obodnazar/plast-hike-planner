@@ -81,6 +81,7 @@ class McpLinks:
         self.tools: dict[str, list[str]] = {}
         self.urls = {"obsidian": settings.obsidian_mcp_url, "plast-trail": settings.plast_trail_url}
         self.calls = 0
+        self.trace: list[dict[str, Any]] = []   # every tools/call of this run, for the plan's technical details
         self.reported = False  # a failure was already explained to the person
 
     def _http(self, name: str) -> httpx.AsyncClient:
@@ -111,6 +112,8 @@ class McpLinks:
         """Call a tool. Returns structured content (or parsed JSON text); raises McpCallError on isError."""
         self.calls += 1
         started = time.monotonic()
+        entry = {"server": server, "tool": tool, "args": _short(args), "result": "connection lost", "ms": None}
+        self.trace.append(entry)
         print(f"  {CYAN}→ {server}.{tool}{RESET}({_short(args)})")
         try:
             result = await self.sessions[server].call_tool(tool, args)
@@ -133,6 +136,7 @@ class McpLinks:
             except (ValueError, KeyError, TypeError):
                 pass
             print(f"    {RED}✗ {code}{RESET}: {message[:150]} {DIM}({ms:.0f} ms){RESET}")
+            entry.update(result=f"error {code}", ms=round(ms))
             raise McpCallError(server, tool, code, message, hint)
         data: Any = result.structuredContent
         if data is None:
@@ -141,4 +145,5 @@ class McpLinks:
             except ValueError:
                 data = text
         print(f"    {GREEN}✓{RESET} {DIM}{ms:.0f} ms{RESET}")
+        entry.update(result="ok", ms=round(ms))
         return data
