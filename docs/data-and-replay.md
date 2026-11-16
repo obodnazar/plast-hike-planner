@@ -37,13 +37,14 @@ Snapshot in the committed file: OSM `2026-11-14T19:08:36Z`, 121 routes (skipped:
 
 - **What a fixture is.** One genuine Open-Meteo response per route, saved untouched together with the exact request: `{"recorded_at", "request": {"url", "params"}, "response": <body>}`. The request asks for 16 days of daily values at the route's highest point.
 - **Fidelity.** Replay loads `response` and passes it through the **same** `parse_forecast()` (with the same completeness checks) and the same risk scoring as a live call. There is no shortcut that returns a prepared answer. If no recorded file covers the requested dates, the tool returns `WEATHER_FIXTURE_MISSING` with the recorded ranges.
-- **Coverage now.** 121 fixtures recorded on 2026-11-14 cover 14–29 Nov 2026. Replay deliberately does not compare dates with today: a recorded window can be replayed later (for the demo); live mode only accepts today..today+15.
+- **Coverage now.** 121 fixtures recorded on 2026-11-14 cover 14–29 Nov 2026. Replay deliberately does not compare dates with today: a recorded window can be replayed later (for the demo); live mode only accepts today..today+15. The agent itself never plans a start date that has passed: it asks for a new one.
 - **Refresh before the demo** (about 3 minutes, ~121 calls):
   ```bash
   uv run python scripts/record_weather.py                       # all routes
   uv run python scripts/record_weather.py --region chornohora   # or one region
   ```
   Then move the start date in the demo request note into the new window.
+- **Tests do not depend on the day or on new recordings.** The test run fixes «today» at 15 Nov 2026, sees only the recording of 14 Nov (`tests/conftest.py`) and reads a frozen copy of the demo note (`tests/data/sokil-request.md`). So a fresh recording or a moved demo date changes the demo, never the test results.
 
 ## Rate limits respected
 

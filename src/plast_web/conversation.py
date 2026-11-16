@@ -21,7 +21,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from plast_agent import cli
-from plast_agent.chat import LABELS, QUESTIONS, QUESTIONS_SENIOR, parse_answer, safe_title
+from plast_agent.chat import LABELS, QUESTIONS, QUESTIONS_SENIOR, gone_date, parse_answer, safe_title
 from plast_agent.llm import LLMError
 from plast_agent.mcp_links import ConnectionFailure, McpCallError
 from plast_agent.render import FEATURE_UA, SECTION_UA
@@ -313,6 +313,9 @@ class Conversation:
             if dont_care(text):
                 self.say("Це потрібно для перевірки норм безпеки. Напишіть, будь ласка, число або вік.",
                          self.quick_replies(key))
+                return
+            if gone_date(key, text, self.today):
+                self.say(gone_date(key, text, self.today), self.quick_replies(key))
                 return
             self.text += f"\n\nУточнення:\n- {LABELS[key]}: {text}"   # the code could not read it: the model can
             await self.read("Перечитую запит разом з уточненням…")

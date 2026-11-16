@@ -97,6 +97,15 @@ def test_missing_facts_are_asked_and_read_by_code():
     assert conv.state == "confirm" and conv.request["participants"] == 10 and conv.request["adults"] == 2
 
 
+def test_a_date_that_has_passed_is_refused_without_a_model_call():
+    llm = FakeLLM({**PARSED, "start_date": None}, [GOOD])
+    conv, _ = talk(["Гурток юнацтва, 10 учасників і 2 дорослі, хочемо в Чорногору на 3 дні.", "10.11.2026",
+                    "21 листопада"], llm)
+    said = [e["text"] for e in of(conv, "msg") if e["role"] == "agent"]
+    assert "Дата 10.11.2026 уже минула (сьогодні 16.11.2026): напишіть, будь ласка, іншу." in said
+    assert llm.calls == 1 and conv.state == "confirm" and conv.request["start_date"] == "2026-11-21"
+
+
 def test_cancel_writes_nothing():
     conv, obsidian = talk([DESCRIPTION, {"type": "cancel"}], FakeLLM(PARSED, []))
     assert conv.state == "describe" and not obsidian.written and not list_plans()

@@ -823,6 +823,13 @@ def refine(d: dict[str, Any], text: str, today: date) -> tuple[dict[str, Any], l
         found = latest(parse_date, text, today)
         if found and found >= today:
             d["start_date"] = found.isoformat()
+    try:
+        start = date.fromisoformat(d["start_date"]) if d.get("start_date") else None
+    except ValueError:
+        start = None
+    if start and start < today:   # «субота, 21 листопада 2026» read on 27 Nov: never plan a hike in the past
+        notes.append(f"Дата старту {start:%d.%m.%Y} уже минула (сьогодні {today:%d.%m.%Y}), тому перепитаю.")
+        d["start_date"] = None
     days = latest(parse_days, text)
     if days and 1 <= days <= 7 and days != d.get("days"):
         if d.get("days") is not None:

@@ -123,6 +123,14 @@ def parse_answer(key: str, answer: str, today: date) -> tuple[Any, str | None, d
     return None, None, {}
 
 
+def gone_date(key: str, answer: str, today: date) -> str | None:
+    """A start date that has already passed («21.11.2026» on 27 Nov): say so and ask again, no model call."""
+    found = parse_date(answer, today) if key == "start_date" else None
+    if found and found < today:
+        return f"Дата {found:%d.%m.%Y} уже минула (сьогодні {today:%d.%m.%Y}): напишіть, будь ласка, іншу."
+    return None
+
+
 async def chat(links: McpLinks, llm: LLM, ask: Ask = terminal_ask,
                today: date | None = None) -> tuple[str, dict, list[str]] | None:
     """Run the dialogue. Returns (vault path of the saved request, parsed request, notes) or None if cancelled.
@@ -156,6 +164,8 @@ async def chat(links: McpLinks, llm: LLM, ask: Ask = terminal_ask,
             if value is None:
                 if dont_care(answer):  # the group and the people cannot be assumed: the safety rules need them
                     print("  Це потрібно для перевірки норм безпеки — напишіть, будь ласка, число або вік.")
+                elif gone_date(key, answer, today):
+                    print("  " + gone_date(key, answer, today))
                 else:
                     unread = True
                 continue

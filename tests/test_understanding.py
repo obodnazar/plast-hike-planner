@@ -13,14 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from plast_agent.chat import parse_answer
+from plast_agent.chat import gone_date, parse_answer
 from plast_agent.understanding import (dont_care, parse_count, parse_date, parse_days, people_count, refine,
                                        wished_features)
 from plast_agent.workflow import interpret
 
 TODAY = date(2026, 11, 15)   # a Sunday, as in eval/cases
-NOTE = (Path(__file__).resolve().parents[1] / "demo-vault" / "Запити" / "Мандрівка гуртка Сокіл.md").read_text(
-    encoding="utf-8")
+# a frozen copy of the demo note (demo-vault/Запити/Мандрівка гуртка Сокіл.md as of 15 Nov)
+NOTE = (Path(__file__).resolve().parent / "data" / "sokil-request.md").read_text(encoding="utf-8")
 
 
 def test_the_local_models_real_mistakes_on_the_demo_note_are_caught():
@@ -365,3 +365,27 @@ def test_a_rucksack_weight_belongs_to_its_owner():
                         ("Зважені рюкзаки без їжі й води: учасник — 5 кг, виховник — 7 кг.", (5, 7))]:
         d, _, _ = interpret(dict(g), who + extra, TODAY)
         assert (d["participant_base_gear_kg"], d["adult_base_gear_kg"]) == want, extra
+
+
+def test_a_start_date_that_has_passed_is_asked_again():
+    """The demo note says «субота, 21 листопада 2026»; read on the defence day (27 Nov) it is in the past."""
+    raw = {"section": "yunatstvo", "participants": 10, "adults": 2, "days": 3, "start_date": "2026-11-21",
+           "date_flexibility_days": 2, "region": "chornohora", "max_km_per_day": 12, "start_time": "08:00"}
+    later = date(2026, 11, 27)
+    d, notes, missing = interpret(dict(raw), NOTE, later)
+    assert d["start_date"] is None and "start_date" in missing
+    assert "Дата старту 21.11.2026 уже минула (сьогодні 27.11.2026), тому перепитаю." in notes
+    moved = NOTE.replace("21 листопада 2026", "28 листопада 2026")      # what the leader does before the defence
+    d, _, missing = interpret(dict(raw), moved, later)
+    assert d["start_date"] == "2026-11-28" and not missing
+    d, _, missing = interpret(dict(raw), NOTE, date(2026, 11, 21))      # the day itself is not the past
+    assert d["start_date"] == "2026-11-21" and not missing
+
+
+def test_a_typed_date_that_has_passed_gets_a_plain_answer():
+    later = date(2026, 11, 27)
+    assert gone_date("start_date", "21.11.2026", later) == \
+        "Дата 21.11.2026 уже минула (сьогодні 27.11.2026): напишіть, будь ласка, іншу."
+    assert gone_date("start_date", "28 листопада", later) is None
+    assert gone_date("start_date", "21 листопада", later) is None       # no year: the next 21 Nov
+    assert gone_date("days", "21.11.2026", later) is None

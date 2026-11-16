@@ -22,7 +22,8 @@ from plast_agent.workflow import build_graph
 from plast_trail.server import mcp as plast_trail_server
 
 REQUEST = "Запити/Мандрівка гуртка Сокіл.md"
-NOTE = (Path(__file__).resolve().parents[1] / "demo-vault" / REQUEST).read_text(encoding="utf-8")
+# a frozen copy of the demo note: the leader moves the date of the real one before the defence
+NOTE = (Path(__file__).resolve().parent / "data" / "sokil-request.md").read_text(encoding="utf-8")
 PARSED = {"section": "yunatstvo", "participants": 10, "adults": 2, "days": 3, "start_date": "2026-11-21",
           "date_flexibility_days": 2, "region": "chornohora", "must_include": ["lake"], "start_time": "8:00",
           "max_km_per_day": 12, "max_ascent_per_day_m": None, "max_walking_hours_per_day": None,
@@ -224,6 +225,22 @@ def test_incomplete_request_stops_and_says_what_is_missing():
     stop = next(x for x in _leaves(e.value) if isinstance(x, AgentStop))   # unwrapped like cli.py does
     assert "кількість дорослих" in str(stop) and "вікова група" in str(stop)
     assert "дата старту" not in str(stop)        # the code read «21 листопада 2026» from the note itself
+
+
+def test_a_request_dated_in_the_past_stops_and_asks_for_a_new_date(monkeypatch, capsys):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    import plast_agent.workflow as workflow
+    from plast_agent.mcp_links import _leaves
+    from plast_agent.workflow import AgentStop
+    monkeypatch.setattr(workflow, "kyiv_now", lambda: datetime(2026, 11, 27, 10, 0, tzinfo=ZoneInfo("Europe/Kyiv")))
+    llm = FakeLLM(PARSED, [GOOD])
+    with pytest.raises(Exception) as e:
+        run_agent(llm)
+    stop = next(x for x in _leaves(e.value) if isinstance(x, AgentStop))
+    assert "дата старту" in str(stop) and llm.calls == 1                  # no plan was proposed
+    assert "Дата старту 21.11.2026 уже минула" in capsys.readouterr().out
 
 
 def test_note_shows_what_the_agent_understood_and_cleans_model_text():
