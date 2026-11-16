@@ -52,6 +52,7 @@ class LocalOnly:
 
     def __init__(self, app: ASGIApp, allowed_hosts: set[str]) -> None:
         self.app, self.allowed = app, allowed_hosts
+        self.origins = {f"http://{h}" for h in allowed_hosts}   # the page itself is served over plain http
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
@@ -59,23 +60,24 @@ class LocalOnly:
             return
         headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in scope["headers"]}
         host = headers.get("host", "").lower()
-        origin = headers.get("origin")
-        if host not in self.allowed or (origin and origin.split("://", 1)[-1].lower() not in self.allowed):
-            if scope["type"] == "websocket":   # a page from elsewhere must not drive the agent or write to Obsidian
-                await send({"type": "websocket.close", "code": 1008})
-            else:
-                await PlainTextResponse("Доступ лише з цього комп'ютера.", status_code=403)(scope, receive, send)
-            return
-        if scope["type"] == "websocket":
-            await self.app(scope, receive, send)
-            return
+        origin = headers.get("origin")   # absent for same-origin GETs and non-browser clients: allowed
 
-        async def with_headers(message):
+        async def with_headers(message):   # on every answer, refusals included
             if message["type"] == "http.response.start":
                 extra = [(b"content-security-policy", CSP.encode()), (b"x-content-type-options", b"nosniff"),
                          (b"referrer-policy", b"no-referrer"), (b"x-frame-options", b"DENY")]
                 message["headers"] = list(message.get("headers", [])) + extra
             await send(message)
+
+        if host not in self.allowed or (origin is not None and origin.lower() not in self.origins):
+            if scope["type"] == "websocket":   # a page from elsewhere must not drive the agent or write to Obsidian
+                await send({"type": "websocket.close", "code": 1008})
+            else:
+                await PlainTextResponse("Доступ лише з цього комп'ютера.", status_code=403)(scope, receive, with_headers)
+            return
+        if scope["type"] == "websocket":
+            await self.app(scope, receive, send)
+            return
         await self.app(scope, receive, with_headers)
 
 

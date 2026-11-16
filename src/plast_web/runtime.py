@@ -16,16 +16,44 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
+import ssl
 import subprocess
 import sys
 from typing import Any
 from urllib.parse import urlparse
 
+import httpx
+
 from plast_agent.config import PROJECT_ROOT, ConfigError, load_settings
-from plast_agent.mcp_links import McpLinks, explain_connection
+from plast_agent.mcp_links import McpLinks, _leaves, explain_connection
 
 PING_EVERY_S = 15
 RETRY_AFTER_S = 5
+
+
+CAUSE_UA = {   # (server, cause) -> (what is wrong, what to do), for the page
+    ("obsidian", "unreachable"): ("не відповідає", "Відкрийте Obsidian з демо-сховищем і плагіном Local REST API; "
+                                                   "я підключуся сам."),
+    ("obsidian", "key"): ("не прийняв ключ", "Перевірте OBSIDIAN_API_KEY у .env: Obsidian → Settings → Local REST API "
+                                            "→ API Key. Потім перезапустіть plast-web."),
+    ("obsidian", "certificate"): ("проблема з сертифікатом", "Завантажте сертифікат плагіна заново в certs/ "
+                                                             "(README → Installation and configuration)."),
+    ("obsidian", "other"): ("не вдається підключитися", "Подробиці — у Терміналі, де запущено plast-web."),
+    ("plast-trail", "unreachable"): ("не відповідає", "Запустіть у Терміналі: uv run plast-trail (я перепідключуся сам)."),
+    ("plast-trail", "other"): ("не вдається підключитися", "Подробиці — у Терміналі, де запущено plast-web."),
+}
+
+
+def connection_cause(exc: BaseException) -> str:
+    """unreachable / key / certificate / other, from the exception tree of a failed connection."""
+    for leaf in _leaves(exc):
+        if isinstance(leaf, httpx.HTTPStatusError) and leaf.response.status_code in (401, 403):
+            return "key"
+        if isinstance(leaf, ssl.SSLError):
+            return "certificate"
+        if isinstance(leaf, (httpx.ConnectError, ConnectionError, OSError)):
+            return "unreachable"
+    return "other"
 
 
 def port_open(host: str, port: int) -> bool:
@@ -40,7 +68,8 @@ class Runtime:
         self.problem = ""                          # why the chat cannot start (settings), in Ukrainian
         self.links: McpLinks | None = None
         self.state = {"obsidian": "starting", "plast-trail": "starting"}
-        self.reason = {"obsidian": "", "plast-trail": ""}
+        self.reason = {"obsidian": "", "plast-trail": ""}   # the technical reason, for the terminal
+        self.cause = {"obsidian": "", "plast-trail": ""}    # unreachable / key / certificate / other
         self.tasks: list[asyncio.Task] = []
         self.process: subprocess.Popen | None = None
         self.plan_lock = asyncio.Lock()            # one plan at a time: the free model quota is shared
@@ -112,6 +141,7 @@ class Runtime:
                 if self.state[name] != "wrong":
                     self.state[name] = "down"
                     self.reason[name] = explain_connection(name, self.links.urls[name], exc)
+                    self.cause[name] = connection_cause(exc)
             self.links.sessions.pop(name, None)
             await asyncio.sleep(RETRY_AFTER_S)
 
@@ -125,12 +155,11 @@ class Runtime:
         items = []
         for name, label in (("obsidian", "Obsidian"), ("plast-trail", "Сервер маршрутів plast-trail")):
             st = self.state[name]
-            todo = ""
-            if st == "down" and name == "obsidian":
-                todo = "Відкрийте Obsidian з демо-сховищем і плагіном Local REST API; я підключуся сам."
-            elif st == "down":
-                todo = "Запустіть у Терміналі: uv run plast-trail (я перепідключуся сам)."
+            todo, label_ua = "", ua.get(st, st)
+            if st == "down":
+                label_ua, todo = CAUSE_UA[(name, self.cause[name])] if (name, self.cause[name]) in CAUSE_UA \
+                    else CAUSE_UA[(name, "unreachable")]
             elif st == "wrong":
                 todo = "Звільніть порт або змініть PLAST_TRAIL_PORT у .env."
-            items.append({"name": label, "state": st, "label": ua.get(st, st), "todo": todo})
+            items.append({"name": label, "state": st, "label": label_ua, "todo": todo})
         return {"ready": self.ready(), "problem": self.problem, "items": items}

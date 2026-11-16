@@ -21,7 +21,7 @@ from urllib.parse import quote
 from plast_agent.picture import day_track, mapy_link, route_track, side_trip_link
 from plast_agent.render import FEATURE_UA, KIND_UA, SECTION_UA, VIOLATION_UA, rules_note, violation_ua
 from plast_agent.understanding import REGION_UA
-from plast_agent.workflow import GROUP_CODES, SAFETY_ORDER, fallback_conclusion, group_conclusion
+from plast_agent.workflow import ADULT_CODES, SAFETY_ORDER, fallback_conclusion, group_conclusion
 
 MONTHS = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня",
           "листопада", "грудня"]
@@ -72,9 +72,10 @@ DAY_COLORS = 3
 # Words that may stay in Latin letters on the page: names of services, formats and licences.
 LATIN_OK = {"mapy", "com", "gpx", "openstreetmap", "opentopomap", "open", "meteo", "obsidian", "srtm", "cc", "by",
             "sa", "odbl", "osmand", "organic", "maps", "nasa", "opentopodata", "osm", "contributors"}
+# Boundaries are «not a Latin letter or digit», not \b: «Маршрутr8613349» has no word boundary before the r.
 TECH = [re.compile(p) for p in (
-    r"\b[rw]\d+\b",                  # route and waypoint ids
-    r"\b[A-Z]{2,}(?:_[A-Z]+)+\b",    # codes like ENDS_ON_TOP
+    r"(?<![A-Za-z0-9])[rw]\d+(?![A-Za-z0-9])",          # route and waypoint ids
+    r"(?<![A-Za-z0-9])[A-Z]{2,}(?:_[A-Z]+)+(?![A-Za-z0-9])",   # codes like ENDS_ON_TOP
     r"\[S\d+\]",                     # source tags of the norms research
     r"\b(?:DRAFT|PROPOSAL|HTTP|null|None|True|False|replay|live)\b",
     r"\b(?:chornohora|svydovets|gorgany|marmarosy|borzhava|yunatstvo|novatstvo|senior)\b",
@@ -148,6 +149,8 @@ def violation_text(x: dict[str, Any]) -> str:
         return "Є зауваження до плану: перегляньте його перед виходом."
 
     def ua(v: Any) -> Any:
+        if isinstance(v, str):   # «campsite, hut» comes as one string
+            v = [k.strip() for k in v.split(",")] if "," in v else v
         if isinstance(v, list):
             return ", ".join(KIND_UA.get(k, k) for k in v)
         return KIND_UA.get(v, v) if isinstance(v, str) else v
@@ -252,10 +255,9 @@ def understood(r: dict[str, Any]) -> list[dict[str, str]]:
 
 def safety(record: dict[str, Any]) -> list[dict[str, str]]:
     v, w = record.get("validation") or {}, record.get("weather") or {}
-    group = record.get("status") == "group"
     out = []
     for x in sorted(v.get("violations") or [], key=lambda x: (x["severity"] != "error", SAFETY_ORDER.get(x["code"], 9))):
-        level = "warn" if x["severity"] == "warning" or (group and x["code"] in GROUP_CODES) else "danger"
+        level = "warn" if x["severity"] == "warning" or x["code"] in ADULT_CODES else "danger"
         out.append({"level": level, "text": violation_text(x), "advice": advice(x)})
     for d in w.get("days") or []:
         for t in d.get("triggers") or []:
@@ -328,6 +330,14 @@ def weather(record: dict[str, Any]) -> dict[str, Any]:
     return {"state": "none", "note": ""}
 
 
+def pack_text(p: dict[str, Any]) -> str:
+    """«8.7 кг: спорядження 5 + їжа 2.7 + вода 1» or «3.7 кг їжі й води; спорядження ще не зважено»."""
+    food_water = f"їжа {num(p['food_kg'])} + вода {num(p['water_kg'])}"
+    if p.get("personal_gear_kg") is not None:
+        return f"{num(p['total_kg'])} кг разом зі спорядженням (спорядження {num(p['personal_gear_kg'])} + {food_water})"
+    return f"{num(p['total_kg'])} кг їжі й води ({food_water}); спорядження ще не зважено"
+
+
 def supplies(record: dict[str, Any], names: set[str] = frozenset()) -> dict[str, Any] | None:
     s = record.get("supplies") or {}
     if not s:
@@ -341,14 +351,12 @@ def supplies(record: dict[str, Any], names: set[str] = frozenset()) -> dict[str,
              + (f"; ще {num(s['water_to_carry_for_dry_nights_l'])} л нести на ночівлі без води"
                 if s.get("water_to_carry_for_dry_nights_l") else ""),
              f"Пальники: {s['stoves']} · казанки: {s['pots']} · аптечки: {s['first_aid_kits']}"]
-    if pk.get("limit_kg") is None:
-        lines.append(f"Наплічник учасника на старті: {num(pk['total_kg'])} кг їжі й води; ліміту немає, бо в "
-                     "запиті не вказано вагу найлегшого учасника")
-    else:
-        lines.append(f"Наплічник учасника: {num(pk['total_kg'])} кг їжі й води, ліміт {num(pk['limit_kg'])} кг"
-                     + (f", на спорядження лишається {num(pk['remaining_for_gear_kg'])} кг"
-                        if pk.get("remaining_for_gear_kg") is not None else ""))
-    lines.append(f"Наплічник дорослого: {num(pa['total_kg'])} кг їжі й води")
+    limit = (f"ліміт {num(pk['limit_kg'])} кг" if pk.get("limit_kg") is not None
+             else "ліміту немає, бо в запиті не вказано вагу найлегшого учасника")
+    lines.append(f"Наплічник учасника на старті: {pack_text(pk)}; {limit}"
+                 + (f", на спорядження лишається {num(pk['remaining_for_gear_kg'])} кг"
+                    if pk.get("remaining_for_gear_kg") is not None and pk.get("personal_gear_kg") is None else ""))
+    lines.append(f"Наплічник дорослого на старті: {pack_text(pa)}")
     return {
         "tiles": [{"value": f"{num(s['food_kg_group'])} кг", "label": "їжі на групу"},
                   {"value": f"{round(s['gas_g_group'])} г", "label": "газу"},
@@ -490,7 +498,7 @@ def conclusion(record: dict[str, Any], names: set[str]) -> str:
         text = (group_conclusion(state["validation"] or {}, state["weather"]) if record.get("status") == "group"
                 else fallback_conclusion(state))
     text = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", lambda m: fmt_date(m.group(0)), text)
-    return re.sub(r"(?<![\w−-])-(?=\d)", "−", text)   # −6.3 °C with a real minus   # 2026-11-23 -> пн, 23 листопада
+    return re.sub(r"(?<![\w−-])-(?=\d)", "−", text)   # −6.3 °C with a real minus
 
 
 def summary(record: dict[str, Any]) -> dict[str, Any]:

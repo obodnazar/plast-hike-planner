@@ -230,3 +230,47 @@ def test_lessons_from_the_first_real_run(records):
     record["request"]["place_points"] = [{"name": "Фініш-озеро", "lat": finish["lat"], "lon": finish["lon"],
                                           "elevation_m": None}]
     assert all(m["kind"] != "place" for m in present(record)["map"]["marks"])   # no second pin on the finish
+
+
+# ---------------------------------------------------------------------------------------------- independent review
+def test_ids_glued_to_words_and_kind_lists_do_not_leak():
+    """Codex P2: «Маршрутr8613349 проходить через точкуw30.» passed the detector; «можна: campsite, hut» reached
+    the page. Checked here without looks_technical's own verdict alone."""
+    from plast_web.view import violation_text
+    assert looks_technical("Маршрутr8613349 проходить через точкуw30.")
+    assert looks_technical("статусENDS_ON_TOP")
+    text = violation_text({"code": "OVERNIGHT_KIND_NOT_ALLOWED", "day": 1, "actual": "shelter",
+                           "limit": "campsite, hut", "message": "", "severity": "error"})
+    assert "campsite" not in text and "hut" not in text and "shelter" not in text
+    assert "притулок" in text and "стоянка" in text and "хатина" in text
+
+
+def test_pack_weight_says_what_it_is_made_of(records):
+    """Codex P2: 5 kg of gear + food + water was called «8.7 кг їжі й води»."""
+    lines = " ".join(present(records["attention"])["supplies"]["lines"])
+    assert "8.7 кг разом зі спорядженням (спорядження 5 + їжа 2.7 + вода 1)" in lines
+    assert "8.7 кг їжі й води" not in lines
+
+
+def test_the_whole_origin_is_checked(client):
+    """Codex P3: https://127.0.0.1:8780, ftp://… and a bare host passed as the origin."""
+    for origin in ("https://127.0.0.1:8780", "ftp://127.0.0.1:8780", "127.0.0.1:8780", "null"):
+        assert client.get("/api/plans", headers={"origin": origin}).status_code == 403, origin
+    assert client.get("/api/plans", headers={"origin": "http://127.0.0.1:8780"}).status_code == 200
+    refused = client.get("/api/plans", headers={"host": "evil.example:8780"})
+    assert refused.status_code == 403 and "content-security-policy" in refused.headers
+
+
+def test_the_page_says_why_obsidian_is_not_connected():
+    """Codex P3: a wrong key or certificate was reported as «open Obsidian»."""
+    import ssl
+    import httpx
+    from plast_web.runtime import Runtime, connection_cause
+    request = httpx.Request("GET", "https://127.0.0.1:27124/mcp/")
+    assert connection_cause(httpx.HTTPStatusError("401", request=request, response=httpx.Response(401, request=request))) == "key"
+    assert connection_cause(ssl.SSLError("bad cert")) == "certificate"
+    assert connection_cause(httpx.ConnectError("refused")) == "unreachable"
+    rt = Runtime()
+    rt.state, rt.cause = {"obsidian": "down", "plast-trail": "ok"}, {"obsidian": "key", "plast-trail": ""}
+    item = rt.status()["items"][0]
+    assert item["label"] == "не прийняв ключ" and "OBSIDIAN_API_KEY" in item["todo"]
