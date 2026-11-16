@@ -14,10 +14,9 @@ Everything the leader reads here is Ukrainian written by code, or passed through
 from __future__ import annotations
 
 import asyncio
-import re
 import secrets
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any
 
 from plast_agent import cli
@@ -26,7 +25,7 @@ from plast_agent.llm import LLMError
 from plast_agent.mcp_links import ConnectionFailure, McpCallError
 from plast_agent.render import FEATURE_UA, SECTION_UA
 from plast_agent.understanding import REGION_UA, dont_care, group_consistency, parse_count, parse_date, regions_named
-from plast_agent.workflow import MISSING_UA, resolve_named_places, understand
+from plast_agent.workflow import MISSING_UA, kyiv_now, resolve_named_places, today_kyiv, understand
 from plast_web.view import MONTHS, clean_note, fmt_date, place_names, present
 
 MAX_TEXT = 4000
@@ -103,7 +102,7 @@ class Conversation:
     def __init__(self, runtime, today: date | None = None, llm=None) -> None:
         self.id = secrets.token_hex(8)
         self.runtime = runtime
-        self.today = today or date.today()
+        self.today = today or today_kyiv()
         self.llm = llm                                 # tests pass a scripted model; otherwise made on first need
         self.events: list[dict[str, Any]] = []
         self.listeners: set[asyncio.Queue] = set()
@@ -368,9 +367,9 @@ class Conversation:
             return
         async with rt.plan_lock:
             if not again:
-                title = f"Запит {datetime.now():%Y-%m-%d %H-%M-%S}"
+                title = f"Запит {kyiv_now():%Y-%m-%d %H-%M-%S}"
                 path = f"Запити/{safe_title(title)}.md"
-                note = f"# {title}\n\n{self.text}\n\n_Записано агентом з чату {datetime.now():%Y-%m-%d %H:%M}._\n"
+                note = f"# {title}\n\n{self.text}\n\n_Записано агентом з чату {kyiv_now():%Y-%m-%d %H:%M}._\n"
                 try:
                     await rt.links.call("obsidian", "vault_write", {"path": path, "content": note})
                 except (ConnectionFailure, McpCallError):

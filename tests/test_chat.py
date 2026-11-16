@@ -175,3 +175,11 @@ def test_a_range_of_people_is_read_by_code():
     conv, _ = talk(["Хочемо в Чорногору на 3 дні з 21 листопада, юнацтво, 2 дорослі.", "6-7"], llm)
     assert llm.calls == 1 and conv.request["participants"] == 7            # no second model call, no second question
     assert any("більше число" in n for c in of(conv, "card") for n in c["notes"])
+
+
+def test_a_new_date_after_the_plan_is_kept():
+    """Codex P2: «зміни старт на 23 листопада» after a plan for 21 Nov came back as 21 Nov."""
+    again = {**PARSED, "start_date": "2026-11-21"}            # the model keeps the old date
+    conv, _ = talk([DESCRIPTION, {"type": "confirm"}, "Зміни старт на 23 листопада"], FakeLLM(PARSED, [GOOD, again]))
+    fields = {f["key"]: f["value"] for f in of(conv, "card")[-1]["fields"]}
+    assert fields["start_date"].startswith("пн, 23 листопада")

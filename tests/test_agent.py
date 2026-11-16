@@ -617,3 +617,60 @@ def test_factual_conclusion_puts_safety_first():
     text = fallback_conclusion(state)
     assert text.startswith("Маршрут «") and "Погодний ризик" in text and "найхолодніша ніч" in text
     assert "Вагу спорядження" not in text
+
+
+# ------------------------------------------------------------------ independent review (Codex, 16 Nov)
+def test_high_weather_is_never_hidden_by_the_escort_advice():
+    """Codex P1: 1 adult + a high-risk forecast came out as «Готово · порада щодо супроводу»."""
+    from plast_agent.render import render_plan
+    high, bad = {**GOOD, "start_date": "2026-11-21"}, {**GOOD, "route_id": "r1"}
+    state, _ = run_agent(FakeLLM({**PARSED, "adults": 1}, [high, bad, bad, bad]))
+    assert state["weather"]["overall_risk"] == "high" and state["status"] == "risky"
+    note = render_plan(state, REQUEST, "fake", "2026-11-16 10:00")
+    assert "НЕ рекомендовано" in note and "**Супровід (порада):**" in note    # both, the weather first
+
+
+def test_status_rule_puts_safety_first():
+    from plast_agent.workflow import plan_status
+    adults = {"code": "TOO_FEW_ADULTS", "severity": "error"}
+    days = {"code": "TOO_MANY_DAYS", "severity": "error"}
+    v = lambda *xs: {"violations": list(xs)}   # noqa: E731
+    assert plan_status(v(adults), {"overall_risk": "high"}, []) == "risky"
+    assert plan_status(v(adults), {"overall_risk": "unknown"}, []) == "risky"
+    assert plan_status(v(adults), {"overall_risk": "low"}, []) == "group"
+    assert plan_status(v(days), {"overall_risk": "low"}, []) == "failed"      # too many days is not advice
+    assert plan_status(v(adults, days), {"overall_risk": "low"}, []) == "failed"
+    assert plan_status(v(), {"overall_risk": "medium"}, []) == "attention"
+    assert plan_status(v(), {"overall_risk": "low"}, []) == "ok"
+
+
+def test_a_conclusion_with_invented_numbers_is_replaced_by_the_facts():
+    """Codex P2: «Безпечний маршрут, 1 км, повертайтеся о 10:00, прогноз +25 °C» went into the plan as is."""
+    from plast_agent.workflow import unsupported_numbers
+
+    class Inventive(FakeLLM):
+        async def text(self, system, user):
+            self.calls += 1
+            return "Безпечний маршрут, 1 км, повертайтеся о 10:00, прогноз +25 °C."
+    state, _ = run_agent(Inventive(PARSED, [GOOD]))
+    assert "+25" not in state["conclusion"] and state["conclusion"].startswith("Маршрут «")
+    facts = {"km": 11.35, "arrival": "14:12", "start": "2026-11-21", "night": -10.4}
+    assert unsupported_numbers("11.3 км, прихід о 14:12, старт 21.11, ніч до −10.4 °C, 2 спроби", facts) == []
+    assert unsupported_numbers("1 км, о 10:00, +25 °C", facts) == ["10:00", "1", "25"]
+
+
+def test_unknown_arguments_and_schema_failures_are_structured_errors():
+    """Codex P2: find_routes(typo_limit=1) succeeded silently; a schema failure was plain Pydantic text."""
+    tools, res = call("find_routes", {"section": "yunatstvo", "days": 1, "typo_limit": 1})
+    assert all(t.inputSchema.get("additionalProperties") is False for t in tools.values())
+    assert res.isError
+    for args in ({"section": "yunatstvo", "days": 1, "typo_limit": 1}, {"section": "WRONG", "days": 1},
+                 {"section": "yunatstvo", "days": 0}):
+        _, res = call("find_routes", args)
+        text = res.content[0].text
+        err = json.loads(text[text.index("{"):])["error"]
+        assert res.isError and err["code"] == "INVALID_INPUT" and err["hint"]
+    _, ok = call("calculate_supplies", {"section": "yunatstvo", "participants": 10, "adults": 2,
+                                        "day_loads": [{"km": 5, "ascent_m": 100, "walking_hours": 2, "day": 1,
+                                                       "start": {"id": "w0"}}]})
+    assert not ok.isError                     # validate_hike_plan's days[] still pass as they are

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import date, datetime
+from datetime import date
 from typing import Any, Awaitable, Callable
 
 from plast_agent.llm import LLM
@@ -19,7 +19,7 @@ from plast_agent.mcp_links import McpLinks
 from plast_agent.render import request_lines
 from plast_agent.understanding import (RANGE, dont_care, group_consistency, next_weekday, norm, parse_count,
                                        parse_date, parse_days, regions_named)
-from plast_agent.workflow import MISSING_UA, resolve_named_places, understand
+from plast_agent.workflow import MISSING_UA, kyiv_now, resolve_named_places, today_kyiv, understand
 
 BOLD, CYAN, YELLOW, RESET = "\033[1m", "\033[36m", "\033[33m", "\033[0m"
 
@@ -128,7 +128,7 @@ async def chat(links: McpLinks, llm: LLM, ask: Ask = terminal_ask,
     """Run the dialogue. Returns (vault path of the saved request, parsed request, notes) or None if cancelled.
     The model reads the description once; short answers are read by code (understanding.parse_*), so a
     question costs no model request. The model re-reads only an answer the code cannot read, or a correction."""
-    today = today or date.today()
+    today = today or today_kyiv()
 
     async def read(text: str) -> tuple[dict, list[str]]:   # the model reads; plast-trail checks the place names
         request, notes, _ = await understand(llm, text, today)
@@ -204,9 +204,9 @@ async def chat(links: McpLinks, llm: LLM, ask: Ask = terminal_ask,
         return None
 
     title = safe_title(await ask("Назва запиту для Obsidian (Enter — автоматично): ")) or \
-        f"Запит {datetime.now():%Y-%m-%d %H-%M}"
+        f"Запит {kyiv_now():%Y-%m-%d %H-%M}"
     path = f"Запити/{title}.md"
-    note = f"# {title}\n\n{text}\n\n_Записано агентом з діалогу {datetime.now():%Y-%m-%d %H:%M}._\n"
+    note = f"# {title}\n\n{text}\n\n_Записано агентом з діалогу {kyiv_now():%Y-%m-%d %H:%M}._\n"
     await links.call("obsidian", "vault_write", {"path": path, "content": note})
     print(f"  Запит збережено в Obsidian: {path}")
     return path, request, notes

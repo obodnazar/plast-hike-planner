@@ -113,3 +113,13 @@ def test_output_is_utf8_even_when_the_console_is_not():
                          env={**os.environ, "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"})
     assert out.returncode == 0, out.stderr.decode("utf-8", "replace")[-500:]
     assert "Підключаюся" in out.stdout.decode("utf-8")
+
+
+def test_one_kyiv_clock_whatever_the_laptop_time_zone():
+    """Codex P2: now_kyiv() used the laptop's zone; near midnight «завтра» moved by a day."""
+    code = "from plast_agent.workflow import now_kyiv, kyiv_now; print(now_kyiv(), kyiv_now().utcoffset())"
+    out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True,
+                         env={**os.environ, "TZ": "America/Los_Angeles"})
+    assert out.returncode == 0, out.stderr[-500:]
+    offset = out.stdout.split()[-1]
+    assert offset in ("2:00:00", "3:00:00")                # Kyiv: UTC+2 in winter, UTC+3 in summer

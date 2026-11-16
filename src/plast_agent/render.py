@@ -166,12 +166,14 @@ def render_plan(state: dict[str, Any], request_path: str, model: str, generated_
                 f"{d['walking_hours']} | {d['start_time']} → {d['est_arrival']} | {d.get('sunset') or '—'} | {night} |")
         errors = [x for x in v.get("violations", []) if x["severity"] == "error"]
         warns = [x for x in v.get("violations", []) if x["severity"] == "warning"]
-        if errors and state.get("status") == "group":
+        escort = [x for x in errors if x["code"] in ("TOO_FEW_ADULTS", "ADULT_RATIO")]
+        if escort:   # advice, whatever the status (also next to a risky forecast)
             add("\n**Супровід (порада):**")
-            for x in errors:
+            for x in escort:
                 add(f"- {violation_ua(x)} За можливості візьміть ще когось на супровід"
                     + (" (норми — чернетка)." if "DRAFT" in (v.get("rules_status") or "") else "."))
-        elif errors:
+        errors = [x for x in errors if x not in escort]
+        if errors:
             add("\n**Порушення (план не валідний):**")
             for x in errors:
                 add(f"- ✗ {violation_ua(x)} _Порада інструмента: {clean(x['suggestion'], 300)}_")

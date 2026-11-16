@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -132,8 +133,39 @@ GROUP_CODES = {"TOO_FEW_ADULTS", "ADULT_RATIO", "GROUP_TOO_LARGE", "TOO_MANY_DAY
 
 
 def group_only_errors(validation: dict[str, Any]) -> bool:
+    """Only errors that re-planning cannot fix (the group itself): stop proposing other routes."""
     errors = [x["code"] for x in validation.get("violations", []) if x["severity"] == "error"]
     return bool(errors) and set(errors) <= GROUP_CODES
+
+
+def adult_only_errors(validation: dict[str, Any]) -> bool:
+    """The route passes; only the number of adults is below the norms. The leader decided this is advice
+    («візьміть ще дорослого»), not a verdict. Too many days for the group is NOT advice: that plan fails."""
+    errors = [x["code"] for x in validation.get("violations", []) if x["severity"] == "error"]
+    return bool(errors) and set(errors) <= {"TOO_FEW_ADULTS", "ADULT_RATIO"}
+
+
+def plan_status(validation: dict[str, Any], weather: dict[str, Any], warnings: list) -> str:
+    """Safety first: an error that is not about adults fails the plan; high or unknown weather makes it risky
+    even when adults are short too (the escort advice is shown as well, never instead)."""
+    errors = [x for x in validation.get("violations", []) if x["severity"] == "error"]
+    if errors and not adult_only_errors(validation):
+        return "failed"
+    if weather.get("overall_risk") in ("high", "unknown"):
+        return "risky"
+    if errors:
+        return "group"
+    if weather.get("overall_risk") == "medium" or warnings:
+        return "attention"
+    return "ok"
+
+
+def adult_advice(validation: dict[str, Any]) -> str:
+    """«За можливості візьміть ще дорослого на супровід: Дорослих 1, а потрібно щонайменше 2.» or ''."""
+    errors = [x for x in validation.get("violations", []) if x["severity"] == "error" and x["code"] in ADULT_CODES]
+    if not errors:
+        return ""
+    return "За можливості візьміть ще дорослого на супровід: " + " ".join(violation_ua(x) for x in errors)
 
 # The tool schemas' bounds. A value outside them is dropped here (and reported), instead of making
 # every validate_hike_plan call fail on the schema.
@@ -260,6 +292,8 @@ def fallback_conclusion(state: State) -> str:
     text = f"Маршрут «{v['route_name']}», старт {state['proposal']['start_date']}, дні: {days}. "
     if st == "risky":
         text += "План не рекомендований без змін через погоду. "
+    if adult_advice(v):
+        text += adult_advice(v) + " "
     cold = w.get("coldest_night_c")
     text += f"Погодний ризик {risk}" + (f", найхолодніша ніч {cold:g} °C" if cold is not None else "") + ". "
     safety = sorted((x for x in v.get("violations", []) if x["severity"] == "warning"),
@@ -269,6 +303,59 @@ def fallback_conclusion(state: State) -> str:
     if "DRAFT" in (v.get("rules_status") or ""):
         text += "Норми Пласту в системі ще чернетка: їх має затвердити провідник."
     return text.strip()
+
+
+NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+CLOCK = re.compile(r"(?<!\d)\d{1,2}:\d{2}(?!\d)")
+UNIT = re.compile(r"\s*(?:км|м/с|м\b|метр|год|хв|°|кг|л\b|літр|г\b|грам|мм|%|ккал|дн|ноч)")
+
+
+def known_numbers(*sources: Any, small: bool = True) -> set[str]:
+    """Every number in the tool results, in the forms a sentence may use: 11.35 -> 11.35, 11.3, 11.4, 11;
+    «2026-11-21» -> 2026, 11, 21. small: also 0-10 (counts such as «2 ночівлі», «3 спроби»)."""
+    out: set[str] = {str(n) for n in range(0, 11)} if small else set()
+
+    def add(x: float) -> None:
+        x = abs(x)
+        out.update({f"{x:g}", f"{round(x, 1):g}", f"{round(x):g}", f"{int(x)}", f"{x:.1f}"})
+
+    for v in _leaves(sources):
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            add(float(v))
+        elif isinstance(v, str):
+            for m in NUMBER.finditer(v):
+                add(float(m.group(0).replace(",", ".")))
+    return out
+
+
+def _leaves(v: Any):
+    if isinstance(v, dict):
+        for x in v.values():
+            yield from _leaves(x)
+    elif isinstance(v, (list, tuple)):
+        for x in v:
+            yield from _leaves(x)
+    else:
+        yield v
+
+
+def unsupported_numbers(text: str, *sources: Any) -> list[str]:
+    """Numbers in a model's text that no tool result contains. A number with a unit («1 км», «+25 °C») or a
+    clock time («10:00») must match a tool value exactly; a bare small count may stand alone; «21.11» is a date."""
+    known, strict = known_numbers(*sources), known_numbers(*sources, small=False)
+    clocks = {m.group(0).zfill(5) for v in _leaves(sources) if isinstance(v, str) for m in CLOCK.finditer(v)}
+    bad = [m.group(0) for m in CLOCK.finditer(text) if m.group(0).zfill(5) not in clocks]
+    rest = CLOCK.sub(" ", text)
+    for m in NUMBER.finditer(rest):
+        token = m.group(0).replace(",", ".")
+        pool = strict if UNIT.match(rest[m.end():]) else known
+        if token in pool or f"{float(token):g}" in pool:
+            continue
+        if "." in token and not UNIT.match(rest[m.end():]) and all(
+                part.lstrip("0") in known or part in known for part in token.split(".")):
+            continue   # 21.11 = day.month
+        bad.append(m.group(0))
+    return bad
 
 
 async def read_with_model(llm: LLM, text: str, today: date) -> dict[str, Any]:
@@ -397,7 +484,7 @@ async def resolve_named_places(links: McpLinks, d: dict[str, Any], text: str = "
 async def understand(llm: LLM, text: str, today: date | None = None) -> tuple[dict[str, Any], list[str], list[str]]:
     """Free text -> (request, notes for the leader, missing core facts). One model call, then code.
     `today` is fixed by the evaluation, so relative dates ('в суботу') have one right answer."""
-    today = today or date.today()
+    today = today or today_kyiv()
     return interpret(await read_with_model(llm, text, today), text, today)
 
 
@@ -625,15 +712,9 @@ def build_graph(links: McpLinks, llm: LLM):
                   f"пальники {s['stoves']}; наплічник учасника {pk['total_kg']} кг "
                   f"({'ліміт ' + str(pk['limit_kg']) + ' кг' if pk['limit_kg'] is not None else 'без ліміту для групи'})")
         warnings = [x for x in v["violations"] if x["severity"] == "warning"] + s["warnings"]
-        if group_only_errors(v):
-            status = "group"   # the route is fine; the group must change before the hike
+        status = plan_status(v, w, warnings)
+        if adult_only_errors(v):
             print(f"    {YELLOW}маршрут підходить; за можливості візьміть ще дорослого на супровід{RESET}")
-        elif w.get("overall_risk") in ("high", "unknown"):
-            status = "risky"
-        elif w.get("overall_risk") == "medium" or warnings:
-            status = "attention"
-        else:
-            status = "ok"
         return {"supplies": s, "status": status}
 
     async def picture(state: State) -> State:
@@ -713,6 +794,15 @@ def build_graph(links: McpLinks, llm: LLM):
         except Exception as exc:  # the plan note must still be written: a factual summary instead
             print(f"    {YELLOW}модель не відповіла вчасно ({type(exc).__name__}); пишу висновок із фактів{RESET}")
             text = fallback_conclusion(state)
+        else:
+            invented = unsupported_numbers(text, facts, final, state.get("weather"), state.get("supplies"),
+                                           state.get("request"), state.get("proposal"))
+            if invented:   # a number no tool gave: the model made it up, so the facts speak instead
+                print(f"    {YELLOW}у висновку моделі числа, яких немає в результатах інструментів "
+                      f"({', '.join(invented[:5])}); пишу висновок із фактів{RESET}")
+                text = fallback_conclusion(state)
+        if adult_advice(final) and "дорослого" not in text:   # the escort advice is never dropped
+            text = text.strip() + " " + adult_advice(final)
         print(f"    {text[:300]}")
         return {"conclusion": text.strip()}
 
@@ -738,5 +828,18 @@ def build_graph(links: McpLinks, llm: LLM):
     return g.compile()
 
 
+KYIV = ZoneInfo("Europe/Kyiv")
+
+
+def kyiv_now() -> datetime:
+    """One clock for the whole agent: Kyiv time, whatever the laptop's time zone (a run near midnight on a
+    laptop set to UTC must not move «завтра» by a day)."""
+    return datetime.now(KYIV)
+
+
+def today_kyiv() -> date:
+    return kyiv_now().date()
+
+
 def now_kyiv() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M")
+    return kyiv_now().strftime("%Y-%m-%d %H:%M")
