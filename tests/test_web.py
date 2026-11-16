@@ -282,3 +282,16 @@ def test_the_page_says_why_obsidian_is_not_connected():
     rt.state, rt.cause = {"obsidian": "down", "plast-trail": "ok"}, {"obsidian": "key", "plast-trail": ""}
     item = rt.status()["items"][0]
     assert item["label"] == "не прийняв ключ" and "OBSIDIAN_API_KEY" in item["todo"]
+
+
+def test_two_plans_of_the_same_second_are_listed_newest_first(tmp_path):
+    """CI 17 Nov: a plan and its correction saved within one second came back in random order."""
+    import os
+    import time
+    first = {"version": 1, "id": "20261117-101500-ffffff", "status": "ok"}
+    second = {"version": 1, "id": "20261117-101500-000000", "status": "attention"}
+    save_plan(first, tmp_path)
+    time.sleep(0.01)
+    save_plan(second, tmp_path)
+    os.utime(tmp_path / "20261117-101500-000000.json")   # written last
+    assert [r["id"] for r in list_plans(tmp_path)] == ["20261117-101500-000000", "20261117-101500-ffffff"]

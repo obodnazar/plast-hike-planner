@@ -73,7 +73,9 @@ def list_plans(folder: Path | None = None) -> list[dict[str, Any]]:
     if not folder.is_dir():
         return []
     out = []
-    for path in sorted(folder.glob("*.json"), reverse=True):
+    # the id starts with the second the plan was made; two plans of one second (a fast correction) are ordered
+    # by when their files were written, not by the random tail of the id
+    for path in sorted(folder.glob("*.json"), key=lambda f: (f.stem[:15], f.stat().st_mtime_ns), reverse=True):
         record = load_plan(path.stem, folder)
         if record:
             out.append(record)
